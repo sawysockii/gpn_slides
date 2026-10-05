@@ -199,3 +199,53 @@
 - Позже: Stage 5 измерение/layout, Stage 6 индекс/планировщик, Stage 7 QA,
   Stage 8 документный workflow. Production-блокер неизменен: бинарники
   GPN-шрифтов (`strict_output_ready=false`).
+
+---
+
+## Этап 3.5 — Data-driven онтология + runtime LLM (harness) / спецификация (2026-10-05)
+
+### Реализовано
+- Спецификация `GPN_Restyler_Stage_3_5_Dynamic_Ontology_and_Runtime_LLM.md` v1.0:
+  приоритет над предыдущими документами в вопросах источника нормативных значений,
+  динамических наборов IDs, раннего подключения LLM и критериев Stage 3.5.
+- Главный принцип зафиксирован: «Онтология определяет правила и их значения.
+  Модель предлагает композицию. Код исполняет поддержанные правила и проверяет результат.»
+- Data-driven онтология: согласованное изменение в изолированной копии JSON/MD
+  меняет compiled profile, digest, validator и выдаваемые native properties
+  без правки Python-кода.
+- Runtime LLM через `harness`-провайдер (поправка 1.0): CLI пишет запрос
+  в `model_requests/<request_id>.json` → модель харнесса генерирует ответ
+  → `model_responses/<request_id>.json` → pipeline потребляет через тот же
+  `generate()`-интерфейс с trace и валидацией; происхождение кандидата —
+  `harness_model`.
+- Начальный аудит hardcoded: алгоритм классификации (reads_ontology,
+  normative_literal, normative_closed_set, format_constant, engine_policy,
+  fixture_snapshot, schema_adapter); runtime callgraph.
+- §2–§8 спецификации: конкретные контракты для `load_ontology_snapshot`,
+  `compile_ontology`, `resolve_role_style`, `resolve_list_style`,
+  `bind_rules`, `build_planning_view`, `select_planning_rules`,
+  `retrieve_planning_examples`, `make_planning_packet`, LocalModelClient,
+  LayoutIntent schema, system prompt.
+- §9–§13: метамorphic-тесты онтологии (изменение JSON → новое поведение),
+  диагностический bridge (LayoutIntent → Stage 3 edits), smoke run критерии,
+  сохранность данных, два workflow, честные флаги готовности.
+
+### Проблемы
+- Корпоративный экспорт, трансплант неподдержанных объектов, точное измерение
+  текста и финальная визуальная приёмка остаются последующими этапами.
+- `strict_output_ready=false` — полный exporter/layout/render ещё не реализованы.
+- Production-блокер неизменен: бинарники GPN-шрифтов (`production_assets_ready=false`).
+
+### Тесты
+- Спецификация содержит требования к метамorphic-тестам онтологии и
+  transport/schema тестам для LLM-клиента; реализация тестов — впереди.
+
+### Запросы пользователя
+- Исходное задание Stage 3.5: `GPN_Restyler_Stage_3_5_Dynamic_Ontology_and_Runtime_LLM.md` v1.0 —
+  data-driven онтология + runtime LLM до спецификации; на данном этапе не
+  подключать локальный сервер, использовать harness-модель.
+
+### Предстоит
+- Реализация Stage 3.5: audit hardcoded → dynamic compiler → planner bridge →
+  harness smoke run → метамorphic тесты онтологии.
+- После: Stage 4 native exporter/transplant, Stage 5–8.
