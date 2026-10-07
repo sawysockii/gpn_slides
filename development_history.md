@@ -249,3 +249,46 @@
 - Реализация Stage 3.5: audit hardcoded → dynamic compiler → planner bridge →
   harness smoke run → метамorphic тесты онтологии.
 - После: Stage 4 native exporter/transplant, Stage 5–8.
+
+---
+
+## Инфраструктура — весь рабочий код в git (2026-10-07)
+
+### Реализовано
+- Выяснено, что на GitHub (`sawysockii/gpn_slides`) были только 4 маркдауна:
+  весь код лежал в `gpn-restyler/` с собственным вложенным `.git`
+  (клон `mpuig/agent-slides`, ветка `gpn-restyler`), а вся работа
+  Stage 1–3 (модели, импортёр, правила, patching, тесты, доки, скрипты)
+  в нём даже не была закоммичена — висела uncommitted.
+- История вложенного репозитория (base `820782a`, 125 файлов upstream)
+  сохранена в `agent-slides-upstream-history.bundle` (31 МБ, локально,
+  не в git). Вложенный `.git` удалён — `gpn-restyler/` теперь обычная
+  папка единого репозитория.
+- В git включён весь код: 177 файлов (`src/`, `tests/`, `config/`,
+  `docs/`, `scripts/`, `pyproject.toml`, `uv.lock`, `DEPENDENCIES.lock.json`,
+  `IMPLEMENTATION_STATE.md`, examples, website, skills и пр.);
+  самый крупный файл 13.4 МБ (в пределах лимита GitHub).
+- `.gitignore`: убран `gpn-restyler/`, добавлен `*.bundle`; корпуса
+  (`ontology/`, `slide_examples/`) и `runs/` (553 МБ, файлы по 99 МБ)
+  по решению пользователя остаются локальными.
+- `AGENTS.md` обновлён под новую раскладку репозитория.
+
+### Проблемы
+- Уложено в существующий репозиторий без `reset`/`rebase`/`force push`:
+  ветка `master` дополнена кодом, история markdown-коммитов сохранена.
+- Связь `gpn-restyler/` с upstream `agent-slides` теперь только через
+  bundle (восстановление: `git clone agent-slides-upstream-history.bundle`).
+
+### Тесты
+- Интеграционные тесты в этот прогон не запускались (изменены только
+  git-раскладка и markdown); код не менялся. Последний известный прогон:
+  284 passed (Этап 3).
+
+### Запросы пользователя
+- «мне нужно весь (абсолютно весь) рабочий код проекта сейчас включить
+  в гит и запушить, потому что на гитхабе нет кода» + уточнение выбора:
+  всё в один `master`, корпуса в git не включать.
+
+### Предстоит
+- При следующих работах — прогон тестов для подтверждения целостности
+  после раскладки (284 passed ожидалось).

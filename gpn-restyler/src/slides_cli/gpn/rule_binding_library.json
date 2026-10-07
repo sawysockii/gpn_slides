@@ -1,0 +1,247 @@
+{
+  "entries": {
+    "C01": {
+      "checker_key": "check_c01",
+      "condition_sha256": "73b0c9740fda0fdc29da19ae61bfc3b2aef859e04b7450ae3f83671484ef50bd",
+      "implementation_status_at_review": "implemented",
+      "severity": "hard",
+      "source_refs": [
+        "formal_model.constraints.C01"
+      ]
+    },
+    "C02": {
+      "checker_key": "check_c02",
+      "condition_sha256": "7b6676a82a23d937d0e77bd0807e8b53bdcccc279c129ea14010d24c8bbf950f",
+      "implementation_status_at_review": "implemented",
+      "severity": "hard",
+      "source_refs": [
+        "formal_model.constraints.C02"
+      ]
+    },
+    "C03": {
+      "checker_key": "check_c03",
+      "condition_sha256": "31b3fe0f76abb750b184659b105327f15bc451b1b9803e0f9e5ba3cd04816f93",
+      "implementation_status_at_review": "partial",
+      "severity": "hard",
+      "source_refs": [
+        "formal_model.constraints.C03"
+      ]
+    },
+    "C04": {
+      "checker_key": "check_c04",
+      "condition_sha256": "3b7ec0cb7ce74da6f1ef51a4036d196cb437e37a81117c996094fc9a62542bc0",
+      "implementation_status_at_review": "partial",
+      "severity": "hard",
+      "source_refs": [
+        "formal_model.constraints.C04"
+      ]
+    },
+    "C05": {
+      "checker_key": "check_c05",
+      "condition_sha256": "09d3753de78f09fea0069144062bbbd8eb26680a97c3fd74cfbb11a4545f4b8b",
+      "implementation_status_at_review": "partial",
+      "severity": "hard",
+      "source_refs": [
+        "formal_model.constraints.C05"
+      ]
+    },
+    "C06": {
+      "checker_key": "check_c06",
+      "condition_sha256": "b3c5e9164bec6c71d7dd52982fa3fa233e525d923d162424f2d67d9c4afe68f7",
+      "implementation_status_at_review": "deferred",
+      "severity": "hard",
+      "source_refs": [
+        "formal_model.constraints.C06"
+      ]
+    },
+    "C07": {
+      "checker_key": "check_c07",
+      "condition_sha256": "a4d6f0c86e24eb26e3056618f2645d0fca80d1f892a1ee5a2e3b8e54f899700e",
+      "implementation_status_at_review": "deferred",
+      "severity": "hard",
+      "source_refs": [
+        "formal_model.constraints.C07"
+      ]
+    },
+    "C08": {
+      "checker_key": "check_c08",
+      "condition_sha256": "69a64869fc3f2287093cc7e1ce5decb7d0246bd0c164c11a5fabd5bef84acb15",
+      "implementation_status_at_review": "deferred",
+      "severity": "hard",
+      "source_refs": [
+        "formal_model.constraints.C08"
+      ]
+    },
+    "C09": {
+      "checker_key": "check_c09",
+      "condition_sha256": "9505744ebdb213cfcbf2295fdab97fdae7de8ebe61b09b4c4ec1f0f4b89015dc",
+      "implementation_status_at_review": "deferred",
+      "severity": "hard",
+      "source_refs": [
+        "formal_model.constraints.C09"
+      ]
+    },
+    "C10": {
+      "checker_key": "check_c10",
+      "condition_sha256": "c43c8b955e1941afd8cce543c5fc41a776263bc3da088819870af80a389c2c1e",
+      "implementation_status_at_review": "implemented",
+      "severity": "hard",
+      "source_refs": [
+        "formal_model.constraints.C10"
+      ]
+    },
+    "C11": {
+      "checker_key": "check_c11",
+      "condition_sha256": "f75e211879f871da0557b6d30e8117926c89cfb57e0a6da9b11d62406fd0220a",
+      "implementation_status_at_review": "partial",
+      "severity": "hard",
+      "source_refs": [
+        "formal_model.constraints.C11"
+      ]
+    },
+    "C12": {
+      "checker_key": "check_c12",
+      "condition_sha256": "397e9c5b18a2c30cd07a54b003533de36b96249beedd51ba38f964629477d4c9",
+      "implementation_status_at_review": "deferred",
+      "severity": "hard",
+      "source_refs": [
+        "formal_model.constraints.C12"
+      ]
+    },
+    "C13": {
+      "checker_key": "check_c13",
+      "condition_sha256": "8d676ba2bc7a1601b71ceffda48b374f952fce60aee314b557d4ae31eeadfef3",
+      "implementation_status_at_review": "partial",
+      "severity": "hard",
+      "source_refs": [
+        "formal_model.constraints.C13"
+      ]
+    },
+    "C14": {
+      "checker_key": "check_c14",
+      "condition_sha256": "e90f99e518eea36be8cdb46d38fb7a7fc2286a70874a83dd9df05eaabf2c0670",
+      "implementation_status_at_review": "partial",
+      "severity": "hard",
+      "source_refs": [
+        "formal_model.constraints.C14"
+      ]
+    },
+    "C15": {
+      "checker_key": "check_c15",
+      "condition_sha256": "4d9a03f004489a13e5b588def66d4da8c10f62cd9af5e9e547de696b978cb622",
+      "implementation_status_at_review": "deferred",
+      "severity": "hard",
+      "source_refs": [
+        "formal_model.constraints.C15"
+      ]
+    },
+    "C16": {
+      "checker_key": "check_c16",
+      "condition_sha256": "392292a5f0679d60715b73e0acecfcc46b77623dfddce1427f6ce995c1ee712e",
+      "implementation_status_at_review": "implemented",
+      "severity": "hard",
+      "source_refs": [
+        "formal_model.constraints.C16"
+      ]
+    },
+    "C17": {
+      "checker_key": "check_c17",
+      "condition_sha256": "7537551c96bc0f090f1fcb441cbc4639fc5f110f8545fe807907a6dd99879ae5",
+      "implementation_status_at_review": "deferred",
+      "severity": "hard",
+      "source_refs": [
+        "formal_model.constraints.C17"
+      ]
+    },
+    "C18": {
+      "checker_key": "check_c18",
+      "condition_sha256": "7f83c5fabbbfa083e0e4798dc59550d5d68900819092a641a0291483de965e30",
+      "implementation_status_at_review": "deferred",
+      "severity": "hard",
+      "source_refs": [
+        "formal_model.constraints.C18"
+      ]
+    },
+    "C19": {
+      "checker_key": "check_c19",
+      "condition_sha256": "dbcd7fd594d30752ef9ec19d0e5f384cff59dc81e0efc44aecbf61e40ae2cca2",
+      "implementation_status_at_review": "implemented",
+      "severity": "hard",
+      "source_refs": [
+        "formal_model.constraints.C19"
+      ]
+    },
+    "C20": {
+      "checker_key": "check_c20",
+      "condition_sha256": "debcfb8a9076d7df1bea3b053406dab27775fbbc7360a7ff420edbc9cfcafb56",
+      "implementation_status_at_review": "partial",
+      "severity": "hard",
+      "source_refs": [
+        "formal_model.constraints.C20"
+      ]
+    },
+    "C21": {
+      "checker_key": "check_c21",
+      "condition_sha256": "3cf278317b5e545509490133e6c1bd94058cd3927e22badfc9c36cd002d5e0c6",
+      "implementation_status_at_review": "implemented",
+      "severity": "hard",
+      "source_refs": [
+        "formal_model.constraints.C21"
+      ]
+    },
+    "C22": {
+      "checker_key": "check_c22",
+      "condition_sha256": "7dbd4a1dcaa37c009e23d879c9ff54758cbffb7d2cfca0621b4a17e5d9b50441",
+      "implementation_status_at_review": "implemented",
+      "severity": "hard",
+      "source_refs": [
+        "formal_model.constraints.C22"
+      ]
+    },
+    "R01": {
+      "checker_key": "check_r01",
+      "condition_sha256": "cd4167ca69fe3d5d37bf43e0d1026297eaaaf7e58dbe7fc51fb762b67aec3fad",
+      "implementation_status_at_review": "deferred",
+      "severity": "contextual",
+      "source_refs": [
+        "formal_model.constraints.R01"
+      ]
+    },
+    "R02": {
+      "checker_key": "check_r02",
+      "condition_sha256": "c3ebc978456727d7fab73b6cc2a8e01a49eb5932d8d2bb80ccdc33f601f629d8",
+      "implementation_status_at_review": "deferred",
+      "severity": "contextual",
+      "source_refs": [
+        "formal_model.constraints.R02"
+      ]
+    },
+    "R03": {
+      "checker_key": "check_r03",
+      "condition_sha256": "317b7ec463b8012451e18da8393714236dd5a62616252b92dddb8d590a3194fb",
+      "implementation_status_at_review": "deferred",
+      "severity": "contextual",
+      "source_refs": [
+        "formal_model.constraints.R03"
+      ]
+    },
+    "R04": {
+      "checker_key": "check_r04",
+      "condition_sha256": "d18c2617d05727c679aa959d0673ba83c13e5d910ab4a6a1e2d5decd815c86bb",
+      "implementation_status_at_review": "implemented",
+      "severity": "contextual",
+      "source_refs": [
+        "formal_model.constraints.R04"
+      ]
+    }
+  },
+  "library_version": "1.0",
+  "purpose": "Reviewed semantic bindings for the GPN rule registry. Engine data, not a corporate norm: it pins which condition texts were reviewed and by which checker. A condition change invalidates the binding (needs_binding) until re-reviewed.",
+  "reviewed_source": {
+    "normalization": "casefold + whitespace collapse (no semantic rewrite)",
+    "ontology_corpus_hash": "2551319ed35f6e2cd550c5490bb3a8419939cb4b2dd804e9868e12d3ffac578e",
+    "ontology_sha256": "d24be59d5b52f67f1edf28b15722615ac01488c6553a0f17ffe0278fda6b7a90",
+    "ontology_version": "1.2.0",
+    "reviewed_at": "2026-10-05"
+  }
+}

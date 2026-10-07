@@ -3,8 +3,13 @@
 ## 0. Состав проекта
 
 - Корень проекта: `/Users/wysockii/Documents/gpn_slides`
-- Код: `gpn-restyler`, ветка `gpn-restyler` (nested-clone layout).
-- Корпуса (`ontology/`, `slide_examples/`) — только чтение, никогда не менять.
+- Код: `gpn-restyler/` — обычная папка в едином репозитории (ветка `master`).
+  С 2026-10-07 вложенный `.git` (бывший клон `mpuig/agent-slides`) удалён;
+  его история сохранена локально в `agent-slides-upstream-history.bundle`
+  (в git не входит, `*.bundle` в `.gitignore`).
+- В git входит только код: маркдауны, `gpn-restyler/` (без `.venv`).
+  Корпуса (`ontology/`, `slide_examples/`) и `runs/` — только локально,
+  в git не входят; корпуса — только чтение, никогда не менять.
 - Статус разработки: `development_history.md` (история по этапам).
 - Техническое состояние: `gpn-restyler/IMPLEMENTATION_STATE.md`.
 

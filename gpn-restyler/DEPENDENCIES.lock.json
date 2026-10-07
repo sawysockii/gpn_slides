@@ -1,0 +1,207 @@
+{
+  "schema_version": "1.0",
+  "generated": "2026-10-05",
+  "project_root": "/Users/wysockii/Documents/gpn_slides",
+  "code_root": "/Users/wysockii/Documents/gpn_slides/gpn-restyler",
+  "architecture": "arm64",
+  "components": [
+    {
+      "name": "agent-slides",
+      "source_url": "https://github.com/mpuig/agent-slides.git",
+      "license": "MIT",
+      "version": "0.1.0a0",
+      "commit": "820782a5fb8cb8f251d7c0750e4299c321cd068c",
+      "path": "gpn-restyler",
+      "installed_on": "2026-10-05",
+      "official_source": true
+    },
+    {
+      "name": "cpython",
+      "source_url": "https://www.python.org/",
+      "license": "PSF-2.0",
+      "version": "3.12.9",
+      "path": "uv-managed (uv python install 3.12)",
+      "installed_on": "2026-10-05",
+      "official_source": true
+    },
+    {
+      "name": "uv",
+      "source_url": "https://github.com/astral-sh/uv",
+      "license": "Apache-2.0 OR MIT",
+      "version": "0.9.8",
+      "path": "/opt/homebrew/bin/uv",
+      "installed_on": "pre-existing",
+      "official_source": true
+    },
+    {
+      "name": "python-pptx",
+      "source_url": "https://pypi.org/project/python-pptx/",
+      "license": "MIT",
+      "version": "1.0.2",
+      "installed_on": "2026-10-05",
+      "official_source": true
+    },
+    {
+      "name": "lxml",
+      "source_url": "https://pypi.org/project/lxml/",
+      "license": "BSD-3-Clause",
+      "version": "6.0.2",
+      "installed_on": "2026-10-05",
+      "official_source": true
+    },
+    {
+      "name": "pydantic",
+      "source_url": "https://pypi.org/project/pydantic/",
+      "license": "MIT",
+      "version": "2.12.5",
+      "installed_on": "2026-10-05",
+      "official_source": true
+    },
+    {
+      "name": "httpx",
+      "source_url": "https://pypi.org/project/httpx/",
+      "license": "BSD-3-Clause",
+      "version": "0.28.1",
+      "installed_on": "2026-10-05",
+      "official_source": true
+    },
+    {
+      "name": "openpyxl",
+      "source_url": "https://pypi.org/project/openpyxl/",
+      "license": "MIT",
+      "version": "3.1.5",
+      "installed_on": "2026-10-05",
+      "official_source": true
+    },
+    {
+      "name": "fonttools",
+      "source_url": "https://pypi.org/project/fonttools/",
+      "license": "MIT",
+      "version": "4.66.1",
+      "installed_on": "2026-10-05",
+      "official_source": true
+    },
+    {
+      "name": "pillow",
+      "source_url": "https://pypi.org/project/pillow/",
+      "license": "HPND",
+      "version": "12.1.1",
+      "installed_on": "2026-10-05",
+      "official_source": true
+    },
+    {
+      "name": "pytest",
+      "source_url": "https://pypi.org/project/pytest/",
+      "license": "MIT",
+      "version": "9.0.2",
+      "installed_on": "2026-10-05",
+      "official_source": true
+    },
+    {
+      "name": "ruff",
+      "source_url": "https://pypi.org/project/ruff/",
+      "license": "MIT",
+      "version": "0.15.4",
+      "installed_on": "2026-10-05",
+      "official_source": true
+    },
+    {
+      "name": "node",
+      "source_url": "https://nodejs.org/",
+      "license": "MIT",
+      "version": "24.14.1",
+      "path": "/Users/wysockii/.nvm/versions/node/v24.14.1/bin/node",
+      "installed_on": "pre-existing",
+      "note": "spec asks for node@22+; pre-existing node 24 satisfies >=22, no global change",
+      "official_source": true
+    },
+    {
+      "name": "libreoffice",
+      "source_url": "https://www.libreoffice.org/",
+      "license": "MPL-2.0",
+      "version": "26.2.3.2",
+      "path": "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+      "installed_on": "pre-existing",
+      "official_source": true
+    },
+    {
+      "name": "poppler",
+      "source_url": "https://poppler.freedesktop.org/",
+      "license": "GPL-2.0-only",
+      "version": "26.04.0",
+      "path": "/opt/homebrew/bin/pdftotext (pdftoppm, pdffonts)",
+      "installed_on": "pre-existing",
+      "official_source": true
+    },
+    {
+      "name": "tesseract",
+      "source_url": "https://github.com/tesseract-ocr/tesseract",
+      "license": "Apache-2.0",
+      "version": "5.5.3",
+      "path": "/opt/homebrew/bin/tesseract",
+      "checksum_sha256_prefix": "21674e0595020d02",
+      "installed_on": "2026-10-05",
+      "official_source": true
+    },
+    {
+      "name": "tesseract-lang",
+      "source_url": "https://github.com/tesseract-ocr/tessdata",
+      "license": "Apache-2.0",
+      "version": "4.1.0",
+      "path": "/opt/homebrew/share/tessdata",
+      "languages_verified": ["rus", "eng", "osd"],
+      "installed_on": "2026-10-05",
+      "official_source": true
+    },
+    {
+      "name": "playwright",
+      "source_url": "https://playwright.dev/",
+      "license": "Apache-2.0",
+      "version": null,
+      "status": "not installed yet (Stage 5, tools/layout)",
+      "official_source": true
+    },
+    {
+      "name": "docling",
+      "source_url": "https://github.com/docling-project/docling",
+      "license": "MIT",
+      "version": null,
+      "status": "not installed yet (Stage 8, document workflow)",
+      "official_source": true
+    },
+    {
+      "name": "python-docx",
+      "source_url": "https://pypi.org/project/python-docx/",
+      "license": "MIT",
+      "version": null,
+      "status": "not installed yet (Stage 8, document workflow)",
+      "official_source": true
+    }
+  ],
+  "corporate_resources": [
+    {
+      "name": "GPN ontology JSON/MD",
+      "path": "/Users/wysockii/Documents/gpn_slides/ontology",
+      "source": "user-provided",
+      "sha256_json": "d24be59d5b52f67f1edf28b15722615ac01488c6553a0f17ffe0278fda6b7a90",
+      "sha256_md": "a9a2fe1c584a898c2af558b32bfa84b217b591966365455dd926a2fcc8b5058e"
+    },
+    {
+      "name": "slide_examples library",
+      "path": "/Users/wysockii/Documents/gpn_slides/slide_examples/slide_examples.pptx",
+      "source": "user-provided",
+      "sha256": "0c6d6c00b206a8607ff4b1d17102b283d8120339015773cbff8e906827786ae0",
+      "slides": 99
+    },
+    {
+      "name": "corporate fonts (GPN_DIN family)",
+      "status": "MISSING - not provided; strict GPN export blocked (spec §1.3)",
+      "required": true
+    },
+    {
+      "name": "corporate master template gpn_base.pptx",
+      "status": "MISSING - can be derived from slide_examples library (spec §3.1 step 5, §11.5)",
+      "required": true
+    }
+  ]
+}

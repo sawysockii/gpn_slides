@@ -1,0 +1,66 @@
+schema_version = "1.0"
+default_workflow = "presentation"
+
+[paths]
+# Mandatory project corpus directories (spec §1.0). Do not change: after
+# resolution they must equal <project_root>/ontology and <project_root>/slide_examples.
+ontology_dir = "ontology"
+ontology_file = "" # empty = auto-select; non-empty = path inside ontology_dir
+template = "assets/templates/gpn_base.pptx"
+fonts_dir = "assets/fonts"
+references_dir = "slide_examples"
+runs_dir = "runs"
+
+[model]
+# Stage 3.5 amendment 1.0. provider="harness" is the only wired path at this
+# stage: the CLI writes model_requests/<request_id>.json, the harness answers
+# with its current online model into model_responses/<request_id>.json, and the
+# planner consumes that answer through the same generate() contract.
+# provider="local" is reserved for a configured local HTTP endpoint; it is not
+# connected yet and must not be started, downloaded or switched automatically.
+provider = "harness"
+base_url = "http://127.0.0.1:1234/v1"
+model_id = ""
+temperature = 0.25
+max_output_tokens = 4096
+context_budget_tokens = 12000
+timeout_seconds = 600
+max_retries = 1
+concurrency = 1
+use_json_schema = "auto"
+# Bounded wait per generation request for the harness answer file
+# (provider="harness" only; local HTTP uses timeout_seconds).
+harness_wait_seconds = 900.0
+
+[layout]
+css_px_per_in = 96.0
+geometry_tolerance_pt = 0.75
+text_safety_padding_pt = 1.0
+max_local_layout_attempts = 6
+candidate_count = 3
+
+[policy]
+mode = "preserve_structure"
+allow_split = false
+allow_cross_slide_move = false
+allow_text_rewrite = false
+allow_unsupported_raster = false
+require_native_data_objects = true
+max_model_repairs_per_slide = 2
+
+[runtime]
+max_render_processes = 1
+max_model_requests = 1
+render_timeout_seconds = 180
+offline = true
+
+[document]
+models_dir = "assets/models/docling"
+parser_device = "cpu"
+parser_workers = 1
+ocr_mode = "auto"
+ocr_languages = ["rus", "eng"]
+content_policy = "faithful_summary"
+target_slide_count = 0
+allow_external_fetch = false
+allow_illustrative_data = false

@@ -4,8 +4,9 @@ __pycache__/
 .venv/
 .pytest_cache/
 .ruff_cache/
+*.bundle
 
+# Корпуса и артефакты прогонов — только локально, не в git (см. AGENTS.md)
 ontology/
 slide_examples/
 runs/
-gpn-restyler/
