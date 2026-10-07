@@ -85,7 +85,7 @@ def test_analyze_real_corpus_shape() -> None:
 
     from slides_cli.gpn.ontology import resolve_ontology_sources
 
-    project_root = Path("/Users/wysockii/Documents/gpn_slides")
+    project_root = Path(__file__).resolve().parents[3]
     if not (project_root / "ontology").is_dir():
         import pytest
 

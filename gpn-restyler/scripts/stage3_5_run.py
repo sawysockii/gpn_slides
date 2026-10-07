@@ -20,8 +20,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-CODE_ROOT = Path("/Users/wysockii/Documents/gpn_slides/gpn-restyler")
-PROJECT_ROOT = Path("/Users/wysockii/Documents/gpn_slides")
+CODE_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = CODE_ROOT.parent
 STAGE = "stage3_5"
 RUN_ID = sys.argv[2] if len(sys.argv) > 2 else "2026-10-05-02"
 RUN_DIR = PROJECT_ROOT / "runs" / STAGE / RUN_ID

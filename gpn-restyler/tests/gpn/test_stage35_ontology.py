@@ -31,7 +31,7 @@ from slides_cli.gpn.ontology import resolve_ontology_sources
 from slides_cli.gpn.ontology_conflicts import analyze_ontology_sources
 from slides_cli.gpn.rules import RuleEvaluationContext, evaluate_rule_registry
 
-PROJECT_ROOT = Path("/Users/wysockii/Documents/gpn_slides")
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 ONTOLOGY_DIR = PROJECT_ROOT / "ontology"
 PRIMARY_NAME = "GPN_Slide_Design_Ontology.json"
 MD_NAME = "GPN_Slide_Design_Ontology.md"

@@ -7,7 +7,7 @@ from pathlib import Path
 from slides_cli.gpn.compiler import compile_ontology
 from slides_cli.gpn.ontology import resolve_ontology_sources
 
-PROJECT_ROOT = Path("/Users/wysockii/Documents/gpn_slides")
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _compiled():

@@ -15,7 +15,7 @@ from slides_cli.gpn.compiler import compile_ontology
 from slides_cli.gpn.models import TemplateProfile
 from slides_cli.gpn.ontology import resolve_ontology_sources
 
-PROJECT_ROOT = Path("/Users/wysockii/Documents/gpn_slides")
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 A = "http://schemas.openxmlformats.org/drawingml/2006/main"
 
 

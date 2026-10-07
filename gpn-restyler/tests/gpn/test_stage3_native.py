@@ -44,7 +44,7 @@ from slides_cli.gpn.patching import (
 )
 from slides_cli.model import NativeShapeStyle, OperationBatch
 
-PROJECT_ROOT = Path("/Users/wysockii/Documents/gpn_slides")
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 @pytest.fixture()

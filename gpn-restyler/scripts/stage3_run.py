@@ -12,19 +12,19 @@ import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(
-    "/Users/wysockii/Documents/gpn_slides/gpn-restyler") / "src"))
+CODE_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = CODE_ROOT.parent
+
+sys.path.insert(0, str(CODE_ROOT / "src"))
 
 from slides_cli.api import Presentation as P  # noqa: E402
-from slides_cli.api import resolve_shape_address
+from slides_cli.api import resolve_shape_address  # noqa: E402
 from slides_cli.gpn.assets import AssetStore  # noqa: E402
 from slides_cli.gpn.importer import import_deck  # noqa: E402
 from slides_cli.gpn.patching import _build_context, authorize_gpn_edit  # noqa: E402
 from slides_cli.gpn.provenance import build_ledger  # noqa: E402
 from slides_cli.model import OperationBatch  # noqa: E402
 
-CODE_ROOT = Path("/Users/wysockii/Documents/gpn_slides/gpn-restyler")
-PROJECT_ROOT = Path("/Users/wysockii/Documents/gpn_slides")
 RUN_ID = "2026-10-05-02"
 RUN_DIR = PROJECT_ROOT / "runs" / "stage3" / RUN_ID
 

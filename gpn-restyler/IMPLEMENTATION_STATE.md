@@ -134,3 +134,10 @@ Stage 4: native exporter/transplant (tables/charts/notes/links) on top of the St
 - Upstream history is preserved locally as `agent-slides-upstream-history.bundle` (31 MB, gitignored, not pushed).
 - Uncommitted Stage 1–3 work (modified `api.py`/`cli.py`/`model.py`/`pyproject.toml`/`uv.lock`, new `gpn/`, `tests/gpn/`, `docs/`, `scripts/`, `config/`, locks) is now committed in the project repository.
 - Corpora (`ontology/`, `slide_examples/`) and `runs/` remain local-only (gitignored), per user decision; only code is pushed.
+
+## Portability + test state (2026-10-07, appended; lines above kept as the historical record)
+
+- Absolute `/Users/wysockii/...` paths replaced with `Path(__file__).resolve().parents[…]` in 8 `tests/gpn/*` files and both `scripts/stage3_*.py` runners; `src/` never had hardcoded roots. A fresh clone + `uv sync` + copied corpora is sufficient to work elsewhere.
+- `tests/gpn/test_stage35_ontology.py` (written in an earlier session) imported `resolve_role_style` which did not exist → **pytest collection failed and the whole suite could not run**. Implemented `compiler.resolve_role_style` (spec §4.3): delegates to `patching.resolve_native_style` (single resolution path), unknown role = typed error, `sources` is a provenance gate (`ONTOLOGY/SNAPSHOT_SOURCE_MISMATCH` on corpus-hash mismatch).
+- Stage 3.5 is **partially implemented** (compiler `COMPILER_VERSION="stage3.5/1.0"`, `planner.py`, `planning_bridge.py`, `references.py`, `local_llm.py`, runs `stage3_5/2026-10-05-01|02`) — earlier lines saying Stage 3.5 was spec-only were written before this state was known.
+- Full suite 2026-10-07: `uv run ruff check .` clean; **291 passed, 12 failed** (~56 s). All 12 failures are in `test_stage35_ontology.py`: test-side mutations use spec field names (`default_size_pt`, `hex`) vs real corpus names (`size_pt`, `value`), plus not-yet-implemented engine behavior (empty ontology does not raise `AssetMissingError`, `value_pt=-1` compiles without error). The other 284 tests + 7 passing Stage 3.5 tests are green. Fixing the 12 = Stage 3.5 continuation, not started automatically.

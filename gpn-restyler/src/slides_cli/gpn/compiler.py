@@ -10,10 +10,10 @@ import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .bindings import bind_rules, load_binding_library
-from .errors import OntologySchemaError
+from .errors import OntologySchemaError, OntologySourceError
 from .models import (
     CatalogRecord,
     ColorCondition,
@@ -34,6 +34,10 @@ from .models import (
     RuleSpec,
 )
 from .ontology import OntologySources, sha256_file
+
+if TYPE_CHECKING:
+    from ..model import NativeShapeStyle
+    from .patching import StyleApplicationContext
 
 log = logging.getLogger(__name__)
 
@@ -596,6 +600,43 @@ def compile_ontology(
         rule_registry=registry,
         extension_contract=extension_contract,
         compilation_issues=issues,
+    )
+
+
+def resolve_role_style(
+    role_id: str,
+    compiled: CompiledOntology,
+    sources: OntologySources | None = None,
+    *,
+    context: StyleApplicationContext | None = None,
+) -> NativeShapeStyle:
+    """Resolve ``role_id`` into explicit native style primitives (spec §4.3).
+
+    One resolution path for checkers, the patching guard and emitters: every
+    value comes from the compiled snapshot — this module keeps no second copy
+    of the corporate standard. An unknown role is an error, never a fallback
+    body style.
+
+    ``sources`` is the provenance record the snapshot was built from; when
+    the compiled corpus hash disagrees with it the call is refused instead
+    of resolving against mixed corpus versions. ``sources=None`` means the
+    caller owns provenance (e.g. an already verified run snapshot).
+    """
+    if sources is not None:
+        compiled_hash = (compiled.ontology_corpus_hash or "").strip()
+        sources_hash = (sources.ontology_corpus_hash or "").strip()
+        if compiled_hash and sources_hash and compiled_hash != sources_hash:
+            raise OntologySourceError(
+                "ONTOLOGY/SNAPSHOT_SOURCE_MISMATCH",
+                "compiled snapshot and provenance sources are different corpora",
+            )
+    from .patching import StyleApplicationContext as _DefaultContext
+    from .patching import resolve_native_style
+
+    return resolve_native_style(
+        style_role=role_id,
+        rules=compiled,
+        context=context if context is not None else _DefaultContext(),
     )
 
 

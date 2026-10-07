@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 from slides_cli.gpn.pipeline import prepare_corporate_profiles
 
-PROJECT_ROOT = Path("/Users/wysockii/Documents/gpn_slides")
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _config():
