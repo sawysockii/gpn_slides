@@ -541,13 +541,23 @@ def cmd_plan(args: Any, config: Any, project_root: Path) -> int:
         if wait_override is not None:
             model_config.harness_wait_seconds = max(0.0, float(wait_override))
 
-        client = make_model_client(
-            model_config, run_dir=run_dir, provider=model_config.provider,
-            wait_seconds=(
-                model_config.harness_wait_seconds
-                if model_config.provider == "harness" else None
-            ),
-        )
+        try:
+            client = make_model_client(
+                model_config, run_dir=run_dir, provider=model_config.provider,
+                wait_seconds=(
+                    model_config.harness_wait_seconds
+                    if model_config.provider == "harness" else None
+                ),
+            )
+        except ValueError as exc:
+            _emit({
+                "ok": False,
+                "error": {
+                    "code": "MODEL/LOCAL_DEFERRED",
+                    "message": str(exc),
+                },
+            })
+            return int(ExitCode.MODEL_UNAVAILABLE)
         caps = client.probe_capabilities()
 
         _save_json(run_dir / "model_config_redacted.json", {

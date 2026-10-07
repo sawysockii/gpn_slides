@@ -33,7 +33,10 @@ def build_example_descriptors(
     cache_path = run_dir / DESCRIPTOR_FILE
     if cache_path.is_file() and not force:
         try:
-            return json.loads(cache_path.read_text(encoding="utf-8"))
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            if _cache_provenance_ok(cached, project_root):
+                return cached
+            log.warning("examples descriptor cache has foreign provenance; rebuilding")
         except (OSError, json.JSONDecodeError):
             log.warning("examples descriptor cache unreadable; rebuilding")
 
@@ -45,10 +48,18 @@ def build_example_descriptors(
     descriptors: list[dict[str, Any]] = []
     if not discovery.files:
         return _store(cache_path, descriptors)
+    from .reference_guard import ForbiddenReferenceError, assert_allowed_reference
 
     store = AssetStore(run_dir / "examples_assets")
     for record in discovery.files[:5]:
         file_path = Path(project_root) / record.relative_path
+        try:
+            allowed = assert_allowed_reference(
+                file_path, "example_index", project_root, discovery)
+        except ForbiddenReferenceError as exc:
+            log.warning("reference denied: %s", exc)
+            continue
+        _ = allowed
         if not file_path.is_file():
             continue
         try:
@@ -141,6 +152,29 @@ def _words(text: str) -> set[str]:
         for token in "".join(ch if ch.isalnum() or ch.isspace() else " " for ch in text).split()
         if len(token) >= 4
     }
+
+
+def _cache_provenance_ok(cached: Any, project_root: Path) -> bool:
+    """Reject stale caches whose example provenance is outside the whitelist."""
+    from .ontology import discover_slide_examples
+    from .reference_guard import ForbiddenReferenceError, assert_allowed_reference
+
+    if not isinstance(cached, list):
+        return False
+    try:
+        discovery = discover_slide_examples(Path(project_root))
+    except Exception:  # noqa: BLE001 - corpus failure means rebuild
+        return False
+    for desc in cached:
+        if not isinstance(desc, dict):
+            return False
+        src = desc.get("source_path", "")
+        try:
+            assert_allowed_reference(src, "example_cache_reuse", project_root,
+                                     discovery)
+        except ForbiddenReferenceError:
+            return False
+    return True
 
 
 def _store(path: Path, descriptors: list[dict[str, Any]]) -> list[dict[str, Any]]:

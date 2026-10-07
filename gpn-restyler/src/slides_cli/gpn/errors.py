@@ -169,3 +169,14 @@ class PlannerValidationError(GpnError):
 
 class UnsupportedIntentError(GpnError):
     default_exit_code = ExitCode.NEEDS_REVIEW
+
+
+class TemplateMismatchError(GpnError):
+    """Template/reference geometry disagrees with the loaded ontology canvas.
+
+    A mismatch blocks asset-dependent stages (the compiled canvas is the
+    normative one; a differently sized library is not silently adapted).
+    """
+
+    default_exit_code = ExitCode.NEEDS_ASSETS
+    default_recoverable = True

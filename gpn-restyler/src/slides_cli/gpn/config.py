@@ -40,10 +40,11 @@ class PathsConfig(BaseModel):
 class ModelConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    # Stage 3.5 amendment 1.0: "harness" performs every LLM call through the
-    # agent harness' own online model via the model_requests/model_responses
-    # JSON contract; "local" is the (not yet connected) HTTP endpoint.
-    provider: Literal["local", "harness"] = "local"
+    # Stage 4 §0: one provider field, no duplicates. "harness" (mode 2) is
+    # the current default: the harness executes LLM jobs with its online
+    # model. "local_server" (mode 1, legacy spelling "local") is reserved
+    # for a future local-server adapter and is not implemented yet.
+    provider: Literal["local_server", "local", "harness"] = "harness"
     base_url: str = "http://127.0.0.1:1234/v1"
     model_id: str = ""
     temperature: float = 0.25
@@ -230,11 +231,10 @@ _KNOWN_SECTIONS: dict[str, set[str]] = {
         "references_dir", "runs_dir",
     },
     "model": {
-        "base_url", "model_id", "temperature", "max_output_tokens",
+        "provider", "base_url", "model_id", "temperature", "max_output_tokens",
         "context_budget_tokens", "timeout_seconds", "max_retries",
         "concurrency", "use_json_schema", "harness_wait_seconds",
-    },
-    "layout": {
+    },    "layout": {
         "css_px_per_in", "geometry_tolerance_pt", "text_safety_padding_pt",
         "max_local_layout_attempts", "candidate_count",
     },

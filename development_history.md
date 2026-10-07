@@ -348,3 +348,62 @@
   на пустой корпус, cache invalidation по corpus hash) — только по явному
   запросу пользователя (правило «не стартовать следующий этап автоматически»).
 - Далее: smoke run harness (`--llm-provider harness`, §0.3), Stage 4.
+
+## Этап 3.5 (продолжение) — data-driven фиксы + harness smoke run (2026-10-07)
+
+### Реализовано
+- Аудит hardcode завершён: нормативных литералов в production-коде нет
+  (все значения читаются из JSON через `CompiledOntology`); артефакты —
+  `runs/stage3_5/2026-10-07-audit/hardcode_audit.json`, `runtime_callgraph.md`.
+- Исправлены 9 падающих metamorphic-тестов (`tests/gpn/test_stage35_ontology.py`):
+  7 — тесты мутировали несуществующие поля (`hex`→`value`, `usage`-dict→`source_slides`,
+  `source_addition`→`observed_variant`, `catalogs[0]`→dict-of-lists, `metadata.version`→`metadata["version"]`,
+  пустой корпус→`not ready` + отдельный raise-кейс); 2 — реальные гэпы движка.
+- Код-фикс 1 (`compiler.py`): `minimum_text_font_size.value_pt <= 0` или нечисловой —
+  громкий `ValueError`, а не молчаливый default/None (§4.2).
+- Код-фикс 2 (`ontology_conflicts.py`): поднятый minimum, противоречащий неизменённым
+  role sizes, — blocking `contradiction`, `ready_for_compilation=false` (§12.1).
+- Код-фикс 3 (`planner.py`): схема intent привязана к snapshot
+  (`x-ontology-corpus-hash`, `x-ontology-source-hash`) — смена корпуса инвалидирует
+  schema_hash и plan-кэш (§5.3).
+- Код-фикс 4 (`config.py`): `'provider'` добавлен в `_KNOWN_SECTIONS[model]` —
+  harness-путь из example-конфига больше не отвергается.
+- Код-фикс 5 (`patching.py apply_gpn_edits`): reimport кандидата пишется в
+  `candidate_after/` + публикуется как `candidate_after_*`; `source_ir.json` больше
+  не затирается (иначе следующий `plan --run-dir` падал `RUN_MANIFEST_HASH_MISMATCH`).
+- Smoke run (§0.3, поправка 1.0): фикстура 3 слайда (RU, uppercase titles, canvas
+  12192000×6858000) → import → profile → plan-packet → 5 harness-ответов
+  (`model_responses/`, actual_model `muse-spark (opencode harness, 2026-10-07)`) →
+  `plan --llm-provider harness --no-plan-cache`: 5/5 valid, origin `harness_model`,
+  diversity 3 сигнатуры на слайде 1; `--diagnostic-candidate`: applied, committed=10,
+  missing_atoms={}, parts 40/40, кандидат переоткрывается нативно (слайд 0: 5/5 moved,
+  тексты сохранены). Всё в `runs/stage3_5/2026-10-07-smoke/` + `stage3_5_readiness.json`.
+- Чужие changes (`bullets.py`, `errors.py`, `template.py` — TemplateMismatchError и др.)
+  сохранены, не тронуты; reset/rebase/force-push не выполнялись.
+
+### Проблемы
+- `profile` перезаписывает `source_ir.json` эталонной библиотекой (99 слайдов):
+  порядок в одном run-dir — import → profile → import повторно. Зафиксировано
+  в readiness как известное ограничение, не молчаливое поведение.
+- `test_hash_invalidates_all_dependents` изначально падал: смена canvas не меняла
+  схему (в схеме не было привязки к snapshot) — исправлено код-фиксом 3, заодно
+  закрыт реальный staleness plan-кэша при смене корпуса.
+- Per-slide `model_usage.json`/`diversity_report.json` перезаписываются каждым
+  вызовом `plan`; пер-слайд копии сохранены как `model_usage_slide{N}.json`,
+  `diversity_report_slide{N}.json`, stdout — `plan_slide{N}_stdout.json`.
+- Корпуса не мутировали (mtime сентябрьские, все мутации — в tmp-копиях и runs/).
+
+### Тесты
+- `uv run ruff check .` — clean.
+- Полный сюит: **303 passed** (~62 c), в т.ч. 19/19 `test_stage35_ontology.py`.
+- `doctor --check-model` exit=0 (local endpoint не пробуется по поправке 1.0).
+
+### Запросы пользователя
+- «продолжаем. аудит затянулся» → прекращены повторные rg-прогоны, переход к артефактам и smoke run.
+- «продолжай» → доведены фиксы, smoke run, readiness, записи истории.
+
+### Предстоит
+- Stage 4: полный native exporter/transplant (charts/tables/notes/links) — только
+  после ревью результата этого этапа, автоматически не стартовать.
+- Опционально: развести артефакты `profile` (reference IR) и `import` (source IR)
+  по разным именам, чтобы не требовать повторный import после profile.

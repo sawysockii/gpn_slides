@@ -44,3 +44,19 @@
 - Не скачивать корпоративные шрифты; `needs_assets` — честный статус, а не сбой.
 - Не стартовать следующий этап автоматически; следующий шаг — только запись
   в пункте «Предстоит».
+
+## 4. Whitelist примеров оформления (Stage 4 §0.1, §1.4)
+
+- Единственный разрешённый корпус примеров оформления —
+  `project_root/slide_examples`. Все reference loaders, index builders,
+  packet builders и project skill reference tools обязаны вызывать
+  `assert_allowed_reference(path, purpose, project_root, manifest)`
+  (`gpn-restyler/src/slides_cli/gpn/reference_guard.py`).
+- Запрещены как reference: удалённые upstream-примеры
+  (`gpn-restyler/examples/example{1,2,3}.pptx`, agent-slides demo/showcase/
+  templates), built-in samples библиотек, чужие локальные reference-папки,
+  GitHub/web examples, remote URLs, stale index/cache/packets/plans с чужой
+  provenance. Нарушение → `REFERENCE/FORBIDDEN_SOURCE`, без fallback.
+- Входная презентация/документ — пользовательский input содержания, не
+  нормативный образец стиля. Synthetic fixtures — только для unit/integration
+  checks, не для reference index и model packets.

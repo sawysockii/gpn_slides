@@ -141,3 +141,32 @@ Stage 4: native exporter/transplant (tables/charts/notes/links) on top of the St
 - `tests/gpn/test_stage35_ontology.py` (written in an earlier session) imported `resolve_role_style` which did not exist → **pytest collection failed and the whole suite could not run**. Implemented `compiler.resolve_role_style` (spec §4.3): delegates to `patching.resolve_native_style` (single resolution path), unknown role = typed error, `sources` is a provenance gate (`ONTOLOGY/SNAPSHOT_SOURCE_MISMATCH` on corpus-hash mismatch).
 - Stage 3.5 is **partially implemented** (compiler `COMPILER_VERSION="stage3.5/1.0"`, `planner.py`, `planning_bridge.py`, `references.py`, `local_llm.py`, runs `stage3_5/2026-10-05-01|02`) — earlier lines saying Stage 3.5 was spec-only were written before this state was known.
 - Full suite 2026-10-07: `uv run ruff check .` clean; **291 passed, 12 failed** (~56 s). All 12 failures are in `test_stage35_ontology.py`: test-side mutations use spec field names (`default_size_pt`, `hex`) vs real corpus names (`size_pt`, `value`), plus not-yet-implemented engine behavior (empty ontology does not raise `AssetMissingError`, `value_pt=-1` compiles without error). The other 284 tests + 7 passing Stage 3.5 tests are green. Fixing the 12 = Stage 3.5 continuation, not started automatically.
+
+## Stage 3.5 completion (2026-10-07, appended; lines above kept as the historical record)
+
+- The "291 passed, 12 failed" state above is resolved: **303 passed, ruff clean**
+  (2026-10-07, ~62 s), including 19/19 `tests/gpn/test_stage35_ontology.py`.
+- Hardcode audit: no normative literals in production code; all values flow from
+  the JSON snapshot (`runs/stage3_5/2026-10-07-audit/hardcode_audit.json`,
+  `runtime_callgraph.md`). §11.2 tables describe the current-ontology snapshot,
+  not application constants.
+- Engine fixes (all covered by tests): minimum `value_pt<=0`/unparseable raises
+  (`compiler.py`); raised minimum vs unchanged role sizes is a blocking
+  contradiction (`ontology_conflicts.py`); intent schema embeds
+  `x-ontology-corpus-hash`/`x-ontology-source-hash` so corpus changes invalidate
+  schema hashes and plan caches (`planner.py`); `provider` accepted in
+  `[model]` config (`config.py`); candidate reimport publishes
+  `candidate_after_*` and never clobbers `source_ir.json` (`patching.py`).
+- Runtime LLM per amendment 1.0 (harness provider, no local server): 5 real
+  generations consumed via `model_requests/`→`model_responses/` with
+  `--no-plan-cache`, origins `harness_model`, 3/3 valid + distinct diversity
+  signatures on slide 1, `selected_pending_measurement` everywhere.
+- Diagnostic bridge: intent → 10 ops → `diagnostic_candidate.pptx`, reimported
+  natively, 0 missing atoms, package 40/40, texts preserved
+  (`runs/stage3_5/2026-10-07-smoke/`, `stage3_5_readiness.json`).
+- Honest flags unchanged: `production_assets_ready=false` (GPN fonts missing),
+  `strict_output_ready=false`, `render_verified=false`, `visual_validated=false`.
+- Known workflow constraint: `profile` overwrites `source_ir.json` with the
+  reference deck; run order is import → profile → import (recorded in readiness).
+- Pre-existing uncommitted changes (`bullets.py`, `errors.py`, `template.py`)
+  were left untouched.

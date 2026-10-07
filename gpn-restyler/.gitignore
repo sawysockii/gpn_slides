@@ -8,7 +8,12 @@ htmlcov/
 coverage.xml
 .coverage
 *.pptx
-!examples/*.pptx
+# Stage 4 §1.4: legacy upstream sample decks removed by the user (2026-10-07)
+# stay untracked; no exception re-adds them. The user corpus
+# <project_root>/slide_examples is outside this tree and is never ignored here.
+/examples/example1.pptx
+/examples/example2.pptx
+/examples/example3.pptx
 .idea
 .DS_Store
 /visual-diff-report.json

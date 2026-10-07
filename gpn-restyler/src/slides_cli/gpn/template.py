@@ -20,6 +20,7 @@ from lxml import etree
 from pptx import Presentation
 
 from .assets import AssetStore, sha256_bytes, sha256_file
+from .errors import TemplateMismatchError
 from .models import (
     CompiledOntology,
     ContentBoxResolution,
@@ -78,6 +79,23 @@ def _related(graph: PackageGraph, part: str, rel_suffix: str) -> list[str]:
         if rel.rel_type.endswith(rel_suffix) and rel.resolved_part:
             out.append(rel.resolved_part)
     return out
+
+
+def check_canvas_compatible(canvas: RectEMU, *, w: int, h: int) -> None:
+    """Gate: the given canvas must match the expected corporate canvas.
+
+    The compiled ontology canvas is normative; a differently sized template,
+    library or source deck is not silently adapted. Callers that must block
+    (instead of collecting a TEMPLATE_CANVAS_MISMATCH issue as
+    :func:`extract_template_profile` does) use this typed refusal (§12.1
+    ``test_canvas_loaded_template_mismatch``).
+    """
+    if canvas.w != w or canvas.h != h:
+        raise TemplateMismatchError(
+            "TEMPLATE_CANVAS_MISMATCH",
+            f"canvas {canvas.w}x{canvas.h} EMU differs from the expected "
+            f"{w}x{h} EMU",
+        )
 
 
 def extract_template_profile(

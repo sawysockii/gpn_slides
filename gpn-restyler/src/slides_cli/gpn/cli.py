@@ -62,13 +62,26 @@ def build_gpn_parser() -> argparse.ArgumentParser:
     pl.add_argument("--slide-id", type=str, default=None)
     pl.add_argument("--candidates", type=int, default=1)
     pl.add_argument("--no-plan-cache", action="store_true")
-    pl.add_argument("--llm-provider", choices=("local", "harness"), default=None,
+    pl.add_argument("--llm-provider", choices=("local", "local_server", "harness"), default=None,
                     help="Override the configured model provider for this run")
     pl.add_argument("--harness-wait-seconds", type=float, default=None,
                     help="Bounded wait per request for the harness answer file "
                          "(provider=harness only; 0 = fail immediately when absent)")
     pl.add_argument("--diagnostic-candidate", action="store_true",
                     help="Also apply the selected intent as a diagnostic native patch")
+
+    b = sub.add_parser(
+        "build",
+        help="Build a new native deck on the corporate template (service operation)",
+    )
+    b.add_argument("--run-dir", type=Path, required=True)
+    b.add_argument("--plans-dir", type=Path, required=True)
+    b.add_argument("--workflow", choices=("presentation", "document"),
+                   default="presentation")
+    b.add_argument("--overwrite", action="store_true")
+    b.add_argument("--llm-provider", choices=("local", "local_server", "harness"),
+                   default=None,
+                   help="Override the configured model provider for this run")
     return parser
 
 
@@ -366,5 +379,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.gpn_command == "plan":
         from .planner_cli import cmd_plan
         return cmd_plan(args, config, project_root)
+    if args.gpn_command == "build":
+        from .build_cli import cmd_build
+        return cmd_build(args, config, project_root)
     parser.print_help()
     return 2

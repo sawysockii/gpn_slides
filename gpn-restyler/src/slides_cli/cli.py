@@ -379,11 +379,22 @@ def _build_parser() -> argparse.ArgumentParser:
     gpn_plan.add_argument("--slide-id", type=str, default=None)
     gpn_plan.add_argument("--candidates", type=int, default=1)
     gpn_plan.add_argument("--no-plan-cache", action="store_true")
-    gpn_plan.add_argument("--llm-provider", choices=("local", "harness"), default=None)
+    gpn_plan.add_argument("--llm-provider", choices=("local", "local_server", "harness"),
+                          default=None)
     gpn_plan.add_argument("--harness-wait-seconds", type=float, default=None)
     gpn_plan.add_argument(
         "--diagnostic-candidate", action="store_true",
         help="Also apply the selected intent as a diagnostic native patch")
+    gpn_build = gpn_sub.add_parser(
+        "build",
+        help="Build a new native deck on the corporate template (service operation)")
+    gpn_build.add_argument("--run-dir", type=Path, required=True)
+    gpn_build.add_argument("--plans-dir", type=Path, required=True)
+    gpn_build.add_argument("--workflow", choices=("presentation", "document"),
+                           default="presentation")
+    gpn_build.add_argument("--overwrite", action="store_true")
+    gpn_build.add_argument("--llm-provider", choices=("local", "local_server", "harness"),
+                           default=None)
     _add_global_options(gpn)
 
     return parser
@@ -707,6 +718,29 @@ def _build_discovery_contract() -> dict[str, Any]:
             ],
             "request_schema": "request-envelope",
             "response_schema": "planning-result",
+            "supports_field_masks": False,
+            "supports_pagination": False,
+            "supports_dry_run": False,
+        },
+        {
+            "id": "gpn-build",
+            "description": (
+                "GPN service operation: build a new native deck on the active "
+                "corporate template from accepted plans. Deterministic export "
+                "from ResolvedSlides; the exporter makes no model calls. "
+                "Diagnostic candidate only; strict_output_ready stays false."
+            ),
+            "cli": ("slides gpn build --run-dir <dir> --plans-dir <plans> "
+                    "[--overwrite]"),
+            "mutates_deck": False,
+            "inputs": ["run-dir", "plans-dir", "workflow"],
+            "outputs": [
+                "stdout", "candidate.pptx", "candidate_after_ir.json",
+                "content_diff.json", "part_preservation_diff.json",
+                "native_editability_report.json", "stage4_readiness.json",
+            ],
+            "request_schema": "request-envelope",
+            "response_schema": "inspect-payload",
             "supports_field_masks": False,
             "supports_pagination": False,
             "supports_dry_run": False,
@@ -4660,7 +4694,7 @@ def _cmd_gpn(args: argparse.Namespace) -> int:
     if getattr(args, "gpn_command", None):
         argv.append(args.gpn_command)
         for flag in ("run_dir", "reference_library", "source", "input",
-                     "edits_json", "output", "slide_id"):
+                     "edits_json", "output", "slide_id", "plans_dir", "workflow"):
             value = getattr(args, flag, None)
             if value is not None:
                 argv.append(f"--{flag.replace('_', '-')}")

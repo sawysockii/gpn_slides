@@ -342,16 +342,27 @@ def compile_ontology(
     minimum_text_font_size: MinimumFontSize | None = None
     if isinstance(min_size_data, dict) and min_size_data.get("value_pt") is not None:
         try:
-            minimum_text_font_size = MinimumFontSize(
-                value_pt=float(min_size_data["value_pt"]),
-                severity=str(min_size_data.get("severity", "hard")),
-                applies_to=str(min_size_data.get("applies_to", "")),
-                scope_note=str(min_size_data.get("scope_note", "")),
-                source=str(min_size_data.get("source", "")),
-                remedy=str(min_size_data.get("remedy", "")),
+            minimum_value = float(min_size_data["value_pt"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "minimum_text_font_size.value_pt must be a positive number "
+                f"(Decimal pt > 0), got {min_size_data.get('value_pt')!r}; "
+                "a malformed normative value fails loudly instead of defaulting"
+            ) from exc
+        if not minimum_value > 0:
+            raise ValueError(
+                f"minimum_text_font_size.value_pt must be > 0, got "
+                f"{minimum_value!r}; a malformed normative value fails "
+                "loudly instead of defaulting"
             )
-        except (TypeError, ValueError):
-            minimum_text_font_size = None
+        minimum_text_font_size = MinimumFontSize(
+            value_pt=minimum_value,
+            severity=str(min_size_data.get("severity", "hard")),
+            applies_to=str(min_size_data.get("applies_to", "")),
+            scope_note=str(min_size_data.get("scope_note", "")),
+            source=str(min_size_data.get("source", "")),
+            remedy=str(min_size_data.get("remedy", "")),
+        )
 
     # Composition operators
     composition_operators: list[str] = [

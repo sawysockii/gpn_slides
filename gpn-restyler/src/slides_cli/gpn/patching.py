@@ -772,11 +772,28 @@ def apply_gpn_edits(
     links = resolve_internal_links(after_deck, after_graph)
     support = build_import_support_report(
         after_deck, after_ledger, links, after_deck.import_issues)
+    # The candidate reimport must never clobber the run's source_* artifacts:
+    # a later `plan --run-dir` compares the manifest hash against source_ir.
+    # Write to an isolated subdir, then publish as candidate_after_*.
+    import shutil as _shutil
+
+    after_dir = run_dir / "candidate_after"
+    after_dir.mkdir(parents=True, exist_ok=True)
     manifest = write_import_artifacts(
-        run_dir=run_dir, deck=after_deck, ledger=after_ledger,
+        run_dir=after_dir, deck=after_deck, ledger=after_ledger,
         package_manifest=build_manifest(after_graph), support=support,
         links=links)
-    atomic_write_json(run_dir / "candidate_after_ledger.json", after_ledger)
+    for _src_name, _dst_name in (
+        ("source_ir.json", "candidate_after_ir.json"),
+        ("source_ledger.json", "candidate_after_ledger.json"),
+        ("source_package_manifest.json",
+         "candidate_after_package_manifest.json"),
+        ("support_report.json", "candidate_after_support.json"),
+        ("link_resolution.json", "candidate_after_links.json"),
+    ):
+        _src = after_dir / _src_name
+        if _src.is_file():
+            _shutil.copy2(_src, run_dir / _dst_name)
     atomic_write_json(run_dir / "operation_report.json", report)
     result = GpnPatchResult(
         operation_report=report.model_dump(mode="json"),

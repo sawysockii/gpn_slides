@@ -936,6 +936,176 @@ def compare_normative_statements(
     )
 
 
+def _minimum_role_coherence_conflicts(
+    data: Any, source_hash: str,
+) -> list[OntologyConflict]:
+    """Blocking conflict when the loaded minimum contradicts role sizes.
+
+    Stage 3.5 §12.1: raising ``minimum_text_font_size`` above an unchanged
+    role ``size_pt`` is a genuine normative contradiction (the role's own
+    default authoring size would violate the hard minimum). It blocks
+    normative readiness instead of passing silently.
+    """
+    conflicts: list[OntologyConflict] = []
+    if not isinstance(data, dict):
+        return conflicts
+    profile = data.get("style_profile", {})
+    if not isinstance(profile, dict):
+        return conflicts
+    raw_minimum = profile.get("minimum_text_font_size", {})
+    try:
+        minimum = float((raw_minimum or {}).get("value_pt", 0) or 0)
+    except (TypeError, ValueError):
+        return conflicts
+    if not minimum > 0:
+        return conflicts
+    roles = profile.get("typography", [])
+    if not isinstance(roles, list):
+        return conflicts
+    for index, role in enumerate(roles):
+        if not isinstance(role, dict):
+            continue
+        try:
+            size = float(role.get("size_pt"))
+        except (TypeError, ValueError):
+            continue
+        if size < minimum:
+            role_name = str(role.get("role", f"role-{index}"))
+            conflicts.append(OntologyConflict(
+                id=f"conflict:minimum_text_font_size:{role_name}",
+                subject="minimum_text_font_size",
+                property="value_pt",
+                left=NormativeStatement(
+                    id="json:minimum_text_font_size",
+                    subject="minimum_text_font_size",
+                    property="value_pt",
+                    operator="=",
+                    typed_value=str(minimum),
+                    applicability="all",
+                    modality="must",
+                    rule_id="C19",
+                    refs=[NormativeRef(
+                        source_kind="json",
+                        relative_path="style_profile.minimum_text_font_size",
+                        json_pointer="/style_profile/minimum_text_font_size/value_pt",
+                        source_hash=source_hash,
+                    )],
+                ),
+                right=NormativeStatement(
+                    id=f"json:role:{role_name}:size",
+                    subject=role_name,
+                    property="size_pt",
+                    operator="=",
+                    typed_value=str(size),
+                    applicability="all",
+                    modality="must",
+                    rule_id="C19",
+                    refs=[NormativeRef(
+                        source_kind="json",
+                        relative_path="style_profile.typography",
+                        json_pointer=f"/style_profile/typography/{index}/size_pt",
+                        source_hash=source_hash,
+                    )],
+                ),
+                kind="contradiction",
+                blocking=True,
+                explanation=(
+                    f"minimum_text_font_size {minimum}pt contradicts role "
+                    f"{role_name!r} default size {size}pt: the role's own "
+                    "default authoring size would violate the hard minimum"
+                ),
+            ))
+    return conflicts
+
+
+def _marker_size_coherence_conflicts(
+    data: dict[str, Any], source_hash: str
+) -> list[OntologyConflict]:
+    """Blocking conflict when ``marker.ooxml.buSzPct`` disagrees with the
+    declared ``relative_size_percent`` (Stage 4 §1.2.1).
+
+    A copy that changes only the OOXML percent while the declared percent
+    (and the normative Markdown) stays unchanged is an inconsistent norm,
+    never a successful style change: ``buSzPct`` is ``percent * 1000``.
+    """
+    conflicts: list[OntologyConflict] = []
+    if not isinstance(data, dict):
+        return conflicts
+    profile = data.get("style_profile", {})
+    if not isinstance(profile, dict):
+        return conflicts
+    styles = profile.get("list_styles", [])
+    if not isinstance(styles, list):
+        return conflicts
+    for index, style in enumerate(styles):
+        if not isinstance(style, dict):
+            continue
+        marker = style.get("marker", {})
+        if not isinstance(marker, dict):
+            continue
+        declared = marker.get("relative_size_percent")
+        ooxml = marker.get("ooxml", {})
+        bu_sz = ooxml.get("buSzPct") if isinstance(ooxml, dict) else None
+        try:
+            declared_pct = float(declared) if declared is not None else None
+            bu_pct = float(bu_sz) / 1000.0 if bu_sz is not None else None
+        except (TypeError, ValueError):
+            continue
+        if declared_pct is None or bu_pct is None:
+            continue
+        if abs(declared_pct - bu_pct) > 1e-9:
+            ls_id = str(style.get("id", f"list-{index}"))
+            conflicts.append(OntologyConflict(
+                id=f"conflict:list-marker-size:{ls_id}",
+                subject=ls_id,
+                property="bullet_size_pct",
+                left=NormativeStatement(
+                    id=f"json:list:{ls_id}:declared-size",
+                    subject=ls_id,
+                    property="relative_size_percent",
+                    operator="=",
+                    typed_value=str(declared),
+                    applicability="all",
+                    modality="must",
+                    rule_id="C17",
+                    refs=[NormativeRef(
+                        source_kind="json",
+                        relative_path="style_profile.list_styles",
+                        json_pointer=(
+                            f"/style_profile/list_styles/{index}/marker/"
+                            "relative_size_percent"),
+                        source_hash=source_hash,
+                    )],
+                ),
+                right=NormativeStatement(
+                    id=f"json:list:{ls_id}:ooxml-size",
+                    subject=ls_id,
+                    property="buSzPct",
+                    operator="=",
+                    typed_value=str(bu_sz),
+                    applicability="all",
+                    modality="must",
+                    rule_id="C17",
+                    refs=[NormativeRef(
+                        source_kind="json",
+                        relative_path="style_profile.list_styles",
+                        json_pointer=(
+                            f"/style_profile/list_styles/{index}/marker/ooxml/"
+                            "buSzPct"),
+                        source_hash=source_hash,
+                    )],
+                ),
+                kind="contradiction",
+                blocking=True,
+                explanation=(
+                    f"list style {ls_id!r}: ooxml buSzPct {bu_sz} "
+                    f"({bu_pct}%) contradicts declared relative_size_percent "
+                    f"{declared}: an inconsistent copy, not a style change"
+                ),
+            ))
+    return conflicts
+
+
 def analyze_ontology_sources(
     sources: Any,
 ) -> OntologyConflictReport:
@@ -998,6 +1168,21 @@ def analyze_ontology_sources(
         unparsed.extend(extraction.unparsed_normative_sections)
 
     report = compare_normative_statements(all_statements)
+
+    # Coherence: the loaded minimum must not contradict unchanged role sizes.
+    if sources.primary_json and sources.primary_json.is_file():
+        try:
+            primary_data = json.loads(
+                sources.primary_json.read_text(encoding="utf-8"))
+            coherence = _minimum_role_coherence_conflicts(
+                primary_data, sources.ontology_hash or "")
+            coherence.extend(_marker_size_coherence_conflicts(
+                primary_data, sources.ontology_hash or ""))
+            if coherence:
+                report.conflicts.extend(coherence)
+                report.ready_for_compilation = False
+        except (json.JSONDecodeError, OSError):
+            pass
 
     # Add source hashes
     source_hashes: dict[str, str] = {}

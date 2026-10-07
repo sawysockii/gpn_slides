@@ -22,6 +22,7 @@ from .models import (
     CompiledOntology,
     ListLevelProfile,
     ListStyleProfile,
+    NestedSizePolicy,
     ParagraphSpacing,
     SlideIR,
     TemplateProfile,
@@ -156,6 +157,25 @@ def build_list_profile(
     )
 
 
+def nested_size_for_level(
+    parent_size_pt: float, *, level: int, policy: NestedSizePolicy
+) -> float:
+    """Compute the nested text size from the loaded policy (spec §4.4.6).
+
+    ``parent >= if_parent_gte → parent - then_subtract`` else
+    ``parent - otherwise_subtract``. Pure arithmetic over the loaded numbers:
+    the historical 12/2/1/8 constants exist only inside the current corpus
+    document, never in this algorithm. The ``minimum`` floor is *not* applied
+    here — callers decide whether a below-minimum child is infeasible
+    (``resolve_list_level``) instead of silently clamping.
+    """
+    if not 0 <= level <= 8:
+        raise ValueError(f"list level {level} outside 0..8")
+    if parent_size_pt >= policy.if_parent_gte:
+        return parent_size_pt - policy.then_subtract
+    return parent_size_pt - policy.otherwise_subtract
+
+
 def resolve_list_level(
     *,
     level: int,
@@ -189,12 +209,8 @@ def resolve_list_level(
         text_size = base.size_pt if base else None
         derived = True
     elif policy is not None:
-        if parent_size_pt >= policy.if_parent_gte:
-            text_size = parent_size_pt - policy.then_subtract
-            derived = level > 0
-        else:
-            text_size = parent_size_pt - policy.otherwise_subtract
-            derived = level > 0
+        text_size = nested_size_for_level(parent_size_pt, level=level, policy=policy)
+        derived = level > 0
     else:
         text_size = None
         derived = True

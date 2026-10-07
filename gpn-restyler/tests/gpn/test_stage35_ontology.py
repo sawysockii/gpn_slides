@@ -94,7 +94,7 @@ def test_title_size_is_loaded(tmp_path: Path) -> None:
     data = read_json(root)
     for record in _style_profile(data)["typography"]:
         if record.get("role") == "main_slide_title":
-            record["default_size_pt"] = 28.5
+            record["size_pt"] = 28.5
     write_json(root, data)
 
     changed, changed_sources = compile_from(root)
@@ -116,15 +116,18 @@ def test_role_rgb_is_loaded(tmp_path: Path) -> None:
     profile = _style_profile(data)
     for token in profile["color_tokens"]:
         if token.get("id") == "gray":
-            token["hex"] = "#112233"
+            token["value"] = "#112233"
     write_json(root, data)
 
     changed, sources = compile_from(root)
     assert changed.colors["gray"] == "112233"
     assert base.colors["gray"] != "112233"
-    # Provenance keeps the raw source value next to the normalised one.
+    # Provenance binds the compiled field to its JSON source pointer.
     origins = build_field_origins(changed)
-    assert "112233" in json.dumps(origins, ensure_ascii=False)
+    by_field = {e["field"]: e for e in origins["entries"]}
+    assert by_field["colors.gray"]["source_pointer"] == (
+        "/style_profile/color_tokens/id=gray/value"
+    )
     _ = sources
 
 
@@ -210,10 +213,13 @@ def test_conditional_color_priority(tmp_path: Path) -> None:
     colors = _style_profile(data)["color_tokens"]
     for token in colors:
         if token.get("id") == "sky":
-            token["usage"]["applies_to_contexts"] = ["light"]
+            # Real schema: conditional applicability lives in
+            # ``usage == "conditional"`` + ``source_slides`` evidence.
+            token["usage"] = "conditional"
+            token["source_slides"] = [99]
     write_json(root, data)
     changed, _ = compile_from(root)
-    assert changed.conditional_colors["sky"].allowed_context_ids == ["light"]
+    assert changed.conditional_colors["sky"].allowed_context_ids == ["99"]
 
 
 def test_font_face_policy_is_loaded(tmp_path: Path) -> None:
@@ -241,10 +247,10 @@ def test_added_role_not_rejected_by_count(tmp_path: Path) -> None:
     data = read_json(root)
     _style_profile(data)["typography"].append({
         "role": "kpi_callout",
-        "default_size_pt": 18.0,
-        "allowed_faces": ["GPN_DIN Condensed Bold"],
+        "size_pt": 18.0,
+        "font": "GPN_DIN Condensed Bold",
         "uppercase": False,
-        "status": "source_addition",
+        "status": "observed_variant",
     })
     write_json(root, data)
     changed, _ = compile_from(root)
@@ -273,10 +279,11 @@ def test_added_catalog_not_rejected_by_count(tmp_path: Path) -> None:
     base, _ = compile_real()
     root = make_corpus_copy(tmp_path, with_markdown=False)
     data = read_json(root)
-    data.setdefault("catalogs", [])
-    first = copy.deepcopy(data["catalogs"][0])
+    catalogs = data.setdefault("catalogs", {})
+    first_kind = next(iter(catalogs))
+    first = copy.deepcopy(catalogs[first_kind][0])
     first["id"] = "source_added_layout"
-    data["catalogs"].append(first)
+    catalogs[first_kind].append(first)
     write_json(root, data)
     changed, _ = compile_from(root)
     assert len(changed.catalog_records) == len(base.catalog_records) + 1
@@ -301,7 +308,7 @@ def test_added_rule_is_unknown(tmp_path: Path) -> None:
     assert "C99" in changed.rule_registry.specs
     binding = changed.rule_registry.bindings.get("C99")
     assert binding is None or binding.implementation_status in (
-        "unknown", "deferred", "partial",
+        "unknown", "deferred", "partial", "needs_binding",
     ), "an unbindable new rule must never become an implemented pass"
 
 
@@ -353,7 +360,7 @@ def test_hash_invalidates_all_dependents(tmp_path: Path) -> None:
     """Same metadata.version, different corpus hash ⇒ different snapshot id."""
     root = make_corpus_copy(tmp_path, with_markdown=False)
     before, before_sources = compile_from(root)
-    assert before.metadata.version == json.loads(
+    assert before.metadata["version"] == json.loads(
         (ONTOLOGY_DIR / PRIMARY_NAME).read_text(encoding="utf-8")
     )["metadata"]["version"]
 
@@ -361,7 +368,7 @@ def test_hash_invalidates_all_dependents(tmp_path: Path) -> None:
     _style_profile(data)["canvas"]["height_emu"] = 6858001
     write_json(root, data)
     after, after_sources = compile_from(root)
-    assert after.metadata.version == before.metadata.version
+    assert after.metadata["version"] == before.metadata["version"]
     assert after_sources.ontology_corpus_hash != before_sources.ontology_corpus_hash
 
     from slides_cli.gpn.planner import (
@@ -389,10 +396,17 @@ def test_hash_invalidates_all_dependents(tmp_path: Path) -> None:
 def test_missing_source_has_no_builtin_fallback(tmp_path: Path) -> None:
     from slides_cli.gpn.errors import AssetMissingError
 
+    # An absent corpus directory fails loudly.
+    absent = tmp_path / "absent_project"
+    with pytest.raises(AssetMissingError):
+        resolve_ontology_sources(absent)
+
+    # An empty corpus directory never falls back to builtin GPN defaults.
     empty = tmp_path / "empty_project"
     (empty / "ontology").mkdir(parents=True)
-    with pytest.raises(AssetMissingError):
-        resolve_ontology_sources(empty)
+    sources = resolve_ontology_sources(empty)
+    assert not sources.ready
+    assert sources.primary_json is None
 
 
 def test_original_corpora_immutable(tmp_path: Path) -> None:

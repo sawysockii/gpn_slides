@@ -252,6 +252,13 @@ def build_intent_schema(
         ],
         "additionalProperties": False,
     }
+    # §5.3: the schema document is bound to the exact snapshot it was
+    # generated from. Any corpus change yields a different schema document,
+    # so schema hashes (and downstream plan caches keyed on them) invalidate
+    # automatically. `x-` metadata is never a LayoutIntent field and is
+    # ignored by validate_intent_against_schema, which walks known keywords.
+    schema["x-ontology-corpus-hash"] = rules.ontology_corpus_hash
+    schema["x-ontology-source-hash"] = rules.source_hash
     return schema
 
 

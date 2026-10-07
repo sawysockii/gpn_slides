@@ -73,7 +73,7 @@ DEFAULT_HARNESS_WAIT_SECONDS = 900.0
 HARNESS_POLL_INTERVAL_SECONDS = 0.25
 HARNESS_PROGRESS_EVERY_SECONDS = 15.0
 
-PROVIDERS = ("local", "harness")
+PROVIDERS = ("local", "local_server", "harness")
 HARNESS_DEFAULT_MODEL_ID = "harness-online-model"
 
 
@@ -164,7 +164,7 @@ def resolve_model_config(
 
     base_url = DEFAULT_BASE_URL
     model_id = ""
-    provider = "local"
+    provider = "harness"
     temperature = DEFAULT_TEMPERATURE
     max_output_tokens = DEFAULT_MAX_OUTPUT_TOKENS
     timeout_seconds = DEFAULT_TIMEOUT
@@ -194,6 +194,10 @@ def resolve_model_config(
 
     if provider not in PROVIDERS:
         raise ValueError(f"unknown model provider {provider!r}; expected one of {PROVIDERS}")
+    if provider == "local_server":
+        # Stage 4 §0: mode 1 is a deferred adapter. Never silently treat it
+        # as harness; generation attempts surface MODEL_LOCAL_DEFERRED.
+        provider = "local_server"
 
     api_key = env.get("GPN_MODEL_API_KEY")
 
@@ -802,9 +806,14 @@ def make_model_client(
     wait_seconds: float | None = None,
 ) -> LocalModelClient | HarnessModelClient:
     """Build the configured generation client (local HTTP or harness files)."""
-    chosen = (provider or config.provider or "local").lower()
+    chosen = (provider or config.provider or "harness").lower()
     if chosen == "harness":
         return HarnessModelClient(config, run_dir=run_dir, wait_seconds=wait_seconds)
+    if chosen == "local_server":
+        raise ValueError(
+            "model provider 'local_server' is deferred (no local-server "
+            "adapter in this stage); refusing without harness fallback"
+        )
     if chosen != "local":
         raise ValueError(f"unknown model provider {chosen!r}")
     return LocalModelClient(config, run_dir=run_dir, transport=transport)
