@@ -884,8 +884,18 @@ def run_native_build(
     slide_plan = [{"source_slide_id": r.source_slide_id, "slide_id": r.slide_id,
                    "hidden": _slide_hidden(deck, r.source_slide_id)}
                   for r in resolved]
+    list_profile = None
+    list_profile_path = run_dir / "list_profile.json"
+    if list_profile_path.is_file():
+        try:
+            from .models import ListStyleProfile
+            list_profile = ListStyleProfile.model_validate(
+                json.loads(list_profile_path.read_text(encoding="utf-8")))
+        except Exception:  # noqa: BLE001 - optional profile
+            list_profile = None
     ctx = _native.create_output_deck(template_path, profile or {}, slide_plan,
-                                     rules=rules, work_dir=run_dir / "export_work")
+                                      rules=rules, work_dir=run_dir / "export_work",
+                                      list_profile=list_profile)
     # Transplant source package for chart/media closure.
     if source_path and Path(source_path).is_file():
         parts, ctypes, outgoing, phash = load_source_package(source_path)

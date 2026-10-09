@@ -212,6 +212,45 @@ def test_list_profile_saved_xml(tmp_path: Path):
     _ = box
 
 
+def test_list_marker_applied_when_list_kind(tmp_path: Path):
+    from slides_cli.gpn import native as _native
+    from slides_cli.gpn.assets import AssetStore
+    from slides_cli.gpn.bullets import build_list_profile
+    from slides_cli.gpn.importer import import_deck
+
+    src = tmp_path / "src.pptx"
+    prs = fx.new_deck()
+    slide = fx.blank_slide(prs)
+    fx.add_textbox(slide, "пункт списка")
+    prs.save(str(src))
+    store = AssetStore(tmp_path / "assets")
+    deck, _ = import_deck(src, store)
+    obj = next(o for s in deck.slides for o in s.objects if o.kind == "text")
+    rules = _real_rules()
+    ls = build_list_profile(rules, {}, list(deck.slides))
+    template = tmp_path / "t.pptx"
+    tprs = fx.new_deck()
+    fx.blank_slide(tprs)
+    tprs.save(str(template))
+    ctx = _native.create_output_deck(template, {},
+                                      [{"source_slide_id": "x"}],
+                                      rules=rules, list_profile=ls)
+    out_slide = ctx.presentation.slides[0]
+    obj.payload.paragraphs[0].list_kind = "bullet"
+    obj.payload.paragraphs[0].level = 0
+    _native.emit_text(obj.payload, {"box_emu": {"x": 914400, "y": 914400,
+                                                 "w": 5486400, "h": 914400},
+                                     "role": "body"},
+                       out_slide, ctx, rules=rules, source_object_id=obj.id)
+    out = tmp_path / "out.pptx"
+    adapter.save_presentation(ctx.presentation, out)
+    members = adapter.read_zip_members(out)
+    slide_xml = members["ppt/slides/slide1.xml"].decode("utf-8")
+    assert 'buChar char="§"' in slide_xml
+    assert 'buFont typeface="Wingdings"' in slide_xml
+    assert "пункт списка" in slide_xml
+
+
 # ---------------------------------------------------------------------------
 # §1.2.1 inconsistent ontology copy blocks
 # ---------------------------------------------------------------------------

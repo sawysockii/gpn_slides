@@ -407,3 +407,36 @@
   после ревью результата этого этапа, автоматически не стартовать.
 - Опционально: развести артефакты `profile` (reference IR) и `import` (source IR)
   по разным именам, чтобы не требовать повторный import после profile.
+
+## Stage 4 (продолжение) — исправление apply_list_profile (2026-10-07)
+
+### Реализовано
+- **Исправлен баг `apply_list_profile`**: `native.py` импортировал несуществующую
+  функцию `apply_list_profile` из `bullets.py`. Заменён на правильный вызов
+  `resolve_list_level` + `apply_ls01_paragraph`.
+- **Добавлено поле `list_profile` в `NativeDeckContext`**: профиль теперь
+  загружается из `list_profile.json` в `export_pipeline.py` и передаётся
+  в `create_output_deck`.
+- **Добавлены поля `background_token`/`paragraph_text_token` в `ParagraphIR`**:
+  необходимы для `resolve_list_level`.
+- **Добавлен тест `test_list_marker_applied_when_list_kind`**: проверяет что
+  `buChar char="§"` и `buFont typeface="Wingdings"` присутствуют в output XML
+  при `list_kind != "none"`.
+- **Проверено**: list markers применяются в реальном build (2 слайда с `buChar`).
+
+### Проблемы
+- **Уточнение к Stage 4**: предыдущий коммит `6588b6e` содержал баг —
+  `_apply_list_marker` вызывал несуществующую функцию. List markers не
+  применялись в output. Исправлено в этом разделе.
+
+### Тесты
+- **304 passed, 0 failed** (~62 s), в т.ч. 43 теста `test_stage4_exporter.py`.
+- `ruff check .` clean.
+- Проверено: `buChar char="§"` присутствует в slide1.xml и slide2.xml.
+
+### Запросы пользователя
+- «продолжай» → исправление бага list profile, обновление документации.
+
+### Предстоит
+- Stage 5: measurement/layout (не запускать автоматически).
+- Проверить остальные issues из `emission_report.json`.

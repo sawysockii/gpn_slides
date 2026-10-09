@@ -530,6 +530,8 @@ class ParagraphIR(BaseModel):
     source_hanging_emu: int | None = None
     space_before_pt: float | None = None
     space_after_pt: float | None = None
+    background_token: str = "white"
+    paragraph_text_token: str = "black"
 
 
 TextRole = Literal[

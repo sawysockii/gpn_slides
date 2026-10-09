@@ -61,6 +61,7 @@ class NativeDeckContext:
     part_contracts: list[Any] = field(default_factory=list)
     issues: list[str] = field(default_factory=list)
     work_dir: Path | None = None
+    list_profile: Any = None
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +75,7 @@ def create_output_deck(
     *,
     rules: Any = None,
     work_dir: str | Path | None = None,
+    list_profile: Any = None,
 ) -> NativeDeckContext:
     """Create a new deck on the active template with all slides pre-created."""
     work_path = Path(work_dir) if work_dir else Path(tempfile.gettempdir())
@@ -96,6 +98,7 @@ def create_output_deck(
         active_template_profile=profile,
         rules_snapshot_id=getattr(rules, "source_hash", "") or "",
         work_dir=Path(work_dir) if work_dir else None,
+        list_profile=list_profile,
     )
     layout = adapter.blank_slide_layout(prs)
     for entry in slide_plan:
@@ -198,7 +201,7 @@ def emit_text(
         # and the loaded list profile confirms the level.
         list_kind = getattr(para, "list_kind", "none")
         if list_kind != "none" and rules is not None:
-            _apply_list_marker(p, para, rules)
+            _apply_list_marker(p, para, rules, context)
         para_id = getattr(para, "id", "")
         by_offset: dict[int, list[Any]] = {}
         for br in list(getattr(para, "breaks", []) or []):
@@ -325,15 +328,30 @@ def _style_run(run: Any, style: dict[str, Any], source_run: Any) -> None:
                     "baseline", str(int(evidence.split("=", 1)[1])))
 
 
-def _apply_list_marker(paragraph: Any, para_ir: Any, rules: Any) -> None:
+def _apply_list_marker(paragraph: Any, para_ir: Any, rules: Any,
+                        context: NativeDeckContext | None = None) -> None:
     """Apply the loaded LS01 bullet profile (no literals; see bullets.py)."""
     try:
-        from .bullets import apply_list_profile
-        lists = getattr(rules, "lists", {}) or {}
-        profile = lists.get("LS01") or next(iter(lists.values()), None)
-        if profile is not None:
-            apply_list_profile(paragraph, int(getattr(para_ir, "level", 0)),
-                               profile, {})
+        from .bullets import apply_ls01_paragraph, resolve_list_level
+        profile = getattr(context, "list_profile", None) if context else None
+        if profile is None:
+            lists = getattr(rules, "lists", {}) or {}
+            compiled = lists.get("LS01") or next(iter(lists.values()), None)
+            if compiled is None:
+                return
+            profile = compiled
+        resolved = resolve_list_level(
+            level=int(getattr(para_ir, "level", 0)),
+            parent_size_pt=None,
+            background_token=getattr(para_ir, "background_token", "white"),
+            paragraph_text_token=getattr(para_ir, "paragraph_text_token", "black"),
+            profile=profile,
+        )
+        if resolved.status != "ok":
+            log.warning("list level infeasible: %s", resolved.issues)
+            return
+        ppr = paragraph._p.get_or_add_pPr()
+        apply_ls01_paragraph(ppr.getparent(), resolved)
     except Exception as exc:  # noqa: BLE001 - list styling must not abort export
         log.warning("list profile application failed: %s", exc)
 
