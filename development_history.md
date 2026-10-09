@@ -440,3 +440,36 @@
 ### Предстоит
 - Stage 5: measurement/layout (не запускать автоматически).
 - Проверить остальные issues из `emission_report.json`.
+
+## Stage 4 — финальный статус (2026-10-09)
+
+### Реализовано
+- **Stage 4 завершён на declared support scope**:
+  - `native.py` (1188 lines): create_output_deck, emit_text/emit_table/emit_existing_chart/emit_new_chart/emit_shape/emit_group/emit_image/emit_connectors, apply_display_transform, remap_hyperlinks, finalize_and_save_candidate, verify_native_objects
+  - `transplant.py` (523 lines): plan_part_closure, allocate_part_name, clone_part_graph, validate_package_graph
+  - `opc_adapter.py` (420 lines): private python-pptx operations, final package assembly
+  - `export_pipeline.py` (1369 lines): preflight_native_export, run_native_build, compare_export_preservation, compare_export_parts
+  - `reference_guard.py` (256 lines): assert_allowed_reference, FORBIDDEN_SOURCE denial
+  - `export_models.py` (275 lines): NativeDeckContext, TransplantContext, PartPreservationContract, ExportOptions, NativeBuildResult
+  - 43 теста в `test_stage4_exporter.py` (все обязательные из §13.1)
+- **Исправлен баг apply_list_profile**: list markers применяются (buChar в 2 слайдах candidate)
+- **Все обязательные артефакты §14.2** присутствуют в `runs/stage4/2026-10-07-b/`
+- **LLM provider**: harness (режим 2), generation origin: harness_model
+- **Readiness**: operation_status=completed, native_structure_verified=true, source_preservation_verified=true, package_graph_verified=true, strict_output_ready=false, production_assets_ready=false, render_verified=false, powerpoint_ui_edit_verified=false
+
+### Проблемы (известные ограничения)
+- `FONTS/GPN_FONTS_MISSING` — нет бинарников GPN-шрифтов (блокер Stage 5+)
+- `unresolved_scopes: [measurement, render, powerpoint_ui]` — Stage 5/7
+- Template: clean_template dropped=198 demo slides (ожидаемо)
+- 2 chart_workbook hashes recorded (style-only restyle, bytes exact)
+
+### Тесты
+- **304 passed, 0 failed** (~62 s), ruff clean
+- 43 теста test_stage4_exporter.py (все обязательные из §13.1)
+- 19/19 metamorphic test_stage35_ontology.py
+
+### Запросы пользователя
+- «продолжай» → исправление бага list profile, финальная приёмка Stage 4
+
+### Предстоит
+- Stage 5: measurement/layout (не запускать автоматически)
