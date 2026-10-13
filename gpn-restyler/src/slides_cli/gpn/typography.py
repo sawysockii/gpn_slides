@@ -20,9 +20,12 @@ from .models import (
     AssetRef,
     ColorExpression,
     ColorModifier,
+    DiscoveredFontFile,
     FontAsset,
+    FontDiscoveryReport,
     FontInventory,
     Issue,
+    MeasurementFontBundle,
     ResolvedTextStyle,
     Severity,
     StyleSource,
@@ -837,11 +840,29 @@ def read_font_metadata(path: Path, collection_index: int = 0) -> FontAsset:
     )
 
 
-def check_glyph_coverage(font_asset: FontAsset, required_characters: str) -> dict[str, bool]:
-    """Check if a font covers the required character set (spec §8)."""
+def check_glyph_coverage(
+    font_asset: FontAsset,
+    required_characters: str,
+    font_path: str | Path | None = None,
+) -> dict[str, bool]:
+    """Check whether a font covers the required characters (spec §8).
+
+    With ``font_path`` the best Unicode cmap is read from the actual bytes
+    and every character is checked individually. Without bytes nothing can
+    be verified, so every character reports False (unverified is never a
+    pass). Symbol-font private mappings (e.g. Wingdings charset=2) are not
+    Unicode coverage and are handled separately via ``symbol_mapping``.
+    """
     result: dict[str, bool] = {}
+    cmap: dict[int, str] | None = None
+    if font_path is not None:
+        try:
+            from fontTools.ttLib import TTFont
+            cmap = TTFont(str(font_path), lazy=True).getBestCmap()
+        except Exception:  # noqa: BLE001 - unreadable bytes stay unverified
+            cmap = None
     for char in required_characters:
-        result[char] = True
+        result[char] = (ord(char) in cmap) if cmap is not None else False
     return result
 
 
@@ -928,3 +949,408 @@ def inventory_fonts(
         unverified_faces=unverified,
         issues=issues,
     )
+
+# ---------------------------------------------------------------------------
+# Stage 5 §4: system-wide local font discovery
+# ---------------------------------------------------------------------------
+
+_FONT_SUFFIXES = (".ttf", ".otf", ".ttc", ".otc")
+
+_DARWIN_SEARCH_ROOTS: tuple[tuple[str, str], ...] = (
+    ("user_fonts", "~/Library/Fonts"),
+    ("local_fonts", "/Library/Fonts"),
+    ("system_fonts", "/System/Library/Fonts"),
+)
+
+
+def _macos_enabled_font_names() -> tuple[set[str], list[str]]:
+    """Best-effort enabled-font set from the read-only system font inventory.
+
+    Returns (enabled_basenames, errors). Absence of system_profiler never
+    means absence of fonts: every file found on disk is still reported,
+    only its enabled flag stays None.
+    """
+    import json
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            ["system_profiler", "SPFontsDataType", "-json"],
+            capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return set(), [f"system_profiler unavailable: {exc}"]
+    if proc.returncode != 0:
+        return set(), [f"system_profiler exit={proc.returncode}"]
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        return set(), [f"system_profiler JSON unparseable: {exc}"]
+    enabled: set[str] = set()
+    for entry in data.get("SPFontsDataType", []):
+        if entry.get("enabled") == "yes" and entry.get("_name"):
+            enabled.add(str(entry["_name"]))
+    return enabled, []
+
+
+def discover_local_fonts(
+    config: Any = None,
+    platform: str | None = None,
+    extra_roots: tuple[str | Path, ...] = (),
+    project_root: Path | None = None,
+) -> FontDiscoveryReport:
+    """Discover installed fonts before checking the single configured dir.
+
+    Scans the configured ``fonts_dir`` plus the platform font roots
+    (macOS: ``~/Library/Fonts``, ``/Library/Fonts``,
+    ``/System/Library/Fonts``) and any caller-provided extra roots.
+    Every file is identified by internal name table + SHA-256; filename,
+    CSS family string or lookalike fonts are never sufficient. Byte-identical
+    copies are recorded as duplicates of the first path (preferred order:
+    configured dir, user, local, system, extra); same internal name with
+    different bytes is an ambiguity the caller must resolve explicitly.
+    """
+    import hashlib
+    import sys
+
+    platform = platform or sys.platform
+    roots: list[tuple[str, str]] = []
+    if config is not None and project_root is not None:
+        raw = getattr(getattr(config, "paths", None), "fonts_dir",
+                      "assets/fonts")
+        roots.append(("configured_fonts_dir", str(project_root / str(raw))))
+    if platform == "darwin":
+        roots.extend(
+            (origin, str(Path(p).expanduser()))
+            for origin, p in _DARWIN_SEARCH_ROOTS)
+    for extra in extra_roots:
+        roots.append(("extra_root", str(extra)))
+
+    enabled_names: set[str] = set()
+    errors: list[str] = []
+    if platform == "darwin":
+        enabled_names, profiler_errors = _macos_enabled_font_names()
+        errors.extend(profiler_errors)
+
+    discovered: list[DiscoveredFontFile] = []
+    search_roots: list[str] = []
+    seen_hash_path: dict[tuple[str, int | None], DiscoveredFontFile] = {}
+    for origin, root in roots:
+        root_path = Path(root)
+        if not root_path.is_dir():
+            if origin == "configured_fonts_dir":
+                errors.append(f"configured fonts_dir not found: {root}")
+            continue
+        search_roots.append(root)
+        try:
+            files = sorted(
+                p for p in root_path.rglob("*")
+                if p.is_file() and p.suffix.lower() in _FONT_SUFFIXES)
+        except OSError as exc:
+            errors.append(f"cannot scan {root}: {exc}")
+            continue
+        for path in files:
+            try:
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            except OSError as exc:
+                errors.append(f"cannot read {path}: {exc}")
+                continue
+            indices: list[int | None] = [None]
+            if path.suffix.lower() in (".ttc", ".otc"):
+                try:
+                    from fontTools.ttLib import TTCollection
+                    indices = list(range(len(TTCollection(str(path)).fonts)))
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"cannot read collection {path}: {exc}")
+                    continue
+            for idx in indices:
+                try:
+                    asset = read_font_metadata(
+                        path, collection_index=idx or 0)
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"FONT_READ_FAILED {path.name}: {exc}")
+                    continue
+                key = (digest, idx)
+                first = seen_hash_path.get(key)
+                entry = DiscoveredFontFile(
+                    path=str(path),
+                    origin=origin,  # type: ignore[arg-type]
+                    collection_index=idx,
+                    family=asset.family,
+                    full_name=asset.typeface,
+                    postscript_name=asset.postscript_name,
+                    subfamily=asset.subfamily,
+                    sha256=digest,
+                    byte_count=path.stat().st_size,
+                    enabled=(path.name in enabled_names
+                             if enabled_names else None),
+                    duplicate_of=first.path if first else "",
+                )
+                discovered.append(entry)
+                if first is None:
+                    seen_hash_path[key] = entry
+
+    faces: dict[str, list[str]] = {}
+    for entry in discovered:
+        if entry.full_name and not entry.duplicate_of:
+            faces.setdefault(entry.full_name, []).append(entry.path)
+
+    return FontDiscoveryReport(
+        platform=platform,
+        search_roots=search_roots,
+        discovered=discovered,
+        faces_by_internal_name=faces,
+        errors=errors,
+    )
+
+
+def build_font_inventory_from_discovery(
+    discovery: FontDiscoveryReport,
+    required_faces: set[str],
+) -> FontInventory:
+    """Build a FontInventory from discovery results by exact internal name.
+
+    Byte-identical duplicates are already folded (first path wins, preferred
+    root order). A required face claimed by two different byte streams is
+    reported as ambiguous and left missing rather than silently picking the
+    first file.
+    """
+    by_name: dict[str, list[DiscoveredFontFile]] = {}
+    for entry in discovery.discovered:
+        if entry.full_name and not entry.duplicate_of:
+            by_name.setdefault(entry.full_name, []).append(entry)
+
+    faces: dict[str, FontAsset] = {}
+    marker_faces: dict[str, FontAsset] = {}
+    missing: list[str] = []
+    unverified: list[str] = []
+    issues: list[Issue] = []
+
+    for face in sorted(required_faces):
+        claimants = by_name.get(face, [])
+        hashes = {c.sha256 for c in claimants}
+        if not claimants:
+            missing.append(face)
+            unverified.append(face)
+        elif len(hashes) > 1:
+            missing.append(face)
+            unverified.append(face)
+            issues.append(Issue(
+                rule_id="FONTS",
+                code="FONT_AMBIGUOUS_FACE",
+                severity=Severity.ERROR,
+                details=f"{face}: {len(claimants)} different byte streams "
+                        f"claim this internal name; refusing to guess",
+            ))
+        else:
+            asset = read_font_metadata(
+                Path(claimants[0].path),
+                collection_index=claimants[0].collection_index or 0)
+            faces[face] = asset
+            if not asset.cmap_coverage.get("cyrillic", False):
+                unverified.append(face)
+                issues.append(Issue(
+                    rule_id="FONTS",
+                    code="FONT_CYRILLIC_MISSING",
+                    severity=Severity.WARNING,
+                    details=f"{face}: Cyrillic coverage missing",
+                ))
+
+    for name, claimants in by_name.items():
+        if "Wingdings" in name or "wingding" in name.lower():
+            picked = claimants[0]
+            marker_faces[name] = read_font_metadata(
+                Path(picked.path),
+                collection_index=picked.collection_index or 0)
+    if not any("Wingdings" in f for f in marker_faces):
+        issues.append(Issue(
+            rule_id="FONTS",
+            code="MARKER_FONT_MISSING",
+            severity=Severity.WARNING,
+            details="Wingdings marker font not found",
+        ))
+
+    return FontInventory(
+        faces=faces,
+        marker_faces=marker_faces,
+        missing_faces=missing,
+        unverified_faces=unverified,
+        issues=issues,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Stage 5 §4: measurement font bundle
+# ---------------------------------------------------------------------------
+
+_TEST_ONLY_FONT_CANDIDATES: tuple[str, ...] = (
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/System/Library/Fonts/Supplemental/Times New Roman.ttf",
+    "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+)
+
+
+def _resolve_test_only_font() -> Path | None:
+    """Real available test font with Cyrillic (engine checks only)."""
+    for candidate in _TEST_ONLY_FONT_CANDIDATES:
+        path = Path(candidate)
+        if not path.is_file():
+            continue
+        try:
+            asset = read_font_metadata(path)
+        except Exception:  # noqa: BLE001
+            continue
+        if asset.cmap_coverage.get("cyrillic", False):
+            return path
+    return None
+
+
+def prepare_measurement_fonts(
+    inventory: FontInventory,
+    required_text: str,
+    *,
+    profile_kind: str = "production",
+    rules: Any = None,
+) -> MeasurementFontBundle:
+    """Bind exact font bytes for measurement (Stage 5 §4).
+
+    Production: every inventory face maps to its verified bytes by internal
+    name + hash; cmap is checked against the actual output text (Cyrillic,
+    signs, indices). Missing faces/glyphs yield ``needs_assets`` issues —
+    never a substitute passed off as the corporate face. Synthesis is
+    prohibited downstream by distinct exact-face aliases + font-synthesis:none.
+    Test-only: roles map onto one real available system font with Cyrillic,
+    recorded as an explicit test mapping that never alters production ontology.
+    """
+    import hashlib
+    import json
+
+    from .models import MeasurementFontBinding, MeasurementFontBundle
+
+    if profile_kind not in ("production", "test_only"):
+        raise ValueError(f"unknown profile_kind: {profile_kind!r}")
+
+    bindings: list[MeasurementFontBinding] = []
+    missing_faces: list[str] = []
+    missing_glyphs: list[str] = []
+    issues: list[str] = []
+
+    if profile_kind == "test_only":
+        test_font = _resolve_test_only_font()
+        if test_font is None:
+            issues.append("TEST_ONLY_FONT_MISSING: no system font with "
+                          "Cyrillic coverage available for engine checks")
+            return MeasurementFontBundle(
+                profile_kind="test_only", issues=issues)
+        digest = hashlib.sha256(test_font.read_bytes()).hexdigest()
+        asset = read_font_metadata(test_font)
+        bindings.append(MeasurementFontBinding(
+            role_or_face="* (test_only role mapping)",
+            internal_name=asset.typeface or test_font.name,
+            path=str(test_font),
+            sha256=digest,
+            face_index=None,
+            browser_alias=f"MEASURE_FACE_{digest[:12]}",
+            missing_glyphs=sorted(
+                {c for c in set(required_text)
+                 if not check_glyph_coverage(
+                     asset, c, font_path=test_font).get(c, False)}),
+        ))
+        bundle_hash = hashlib.sha256(json.dumps(
+            [b.model_dump(mode="json") for b in bindings],
+            sort_keys=True).encode()).hexdigest()
+        return MeasurementFontBundle(
+            profile_kind="test_only", bindings=bindings,
+            bundle_hash=bundle_hash, issues=issues)
+
+    faces: dict[str, FontAsset] = dict(inventory.faces)
+    for face in sorted(inventory.missing_faces):
+        if face not in faces:
+            missing_faces.append(face)
+    for face in sorted(faces):
+        asset = faces[face]
+        ref = asset.asset
+        if ref is None or not ref.sha256:
+            missing_faces.append(face)
+            issues.append(f"FONT_BYTES_UNRESOLVED: {face} has no hashed bytes")
+            continue
+        path = _locate_face_bytes(asset)
+        if path is None:
+            missing_faces.append(face)
+            issues.append(f"FONT_BYTES_NOT_FOUND: {face} "
+                          f"sha256={ref.sha256[:16]} not on disk")
+            continue
+        cov = check_glyph_coverage(asset, required_text, font_path=path)
+        missing_here = sorted(c for c, ok in cov.items() if not ok)
+        missing_glyphs.extend(f"U+{ord(c):04X}" for c in missing_here)
+        bindings.append(MeasurementFontBinding(
+            role_or_face=face,
+            internal_name=asset.typeface,
+            path=str(path),
+            sha256=ref.sha256,
+            face_index=asset.collection_index,
+            browser_alias=f"MEASURE_FACE_{ref.sha256[:12]}",
+            missing_glyphs=sorted(set(missing_here)),
+        ))
+
+    for name, marker in inventory.marker_faces.items():
+        ref = marker.asset
+        if ref is None or not ref.sha256:
+            continue
+        path = _locate_face_bytes(marker)
+        if path is None:
+            issues.append(f"MARKER_BYTES_NOT_FOUND: {name}")
+            continue
+        bindings.append(MeasurementFontBinding(
+            role_or_face=f"marker:{name}",
+            internal_name=marker.typeface or name,
+            path=str(path),
+            sha256=ref.sha256,
+            face_index=marker.collection_index,
+            browser_alias=f"MEASURE_FACE_{ref.sha256[:12]}",
+            missing_glyphs=[],
+        ))
+
+    if missing_faces:
+        issues.append("NEEDS_ASSETS: production measurement not confirmed; "
+                      f"missing faces: {sorted(set(missing_faces))}")
+    if missing_glyphs:
+        issues.append("MISSING_GLYPHS: required characters not covered: "
+                      f"{sorted(set(missing_glyphs))[:12]}")
+
+    bundle_hash = hashlib.sha256(json.dumps(
+        [b.model_dump(mode="json") for b in bindings],
+        sort_keys=True).encode()).hexdigest()
+    return MeasurementFontBundle(
+        profile_kind="production",
+        bindings=bindings,
+        bundle_hash=bundle_hash,
+        missing_faces=sorted(set(missing_faces)),
+        missing_glyphs=sorted(set(missing_glyphs)),
+        issues=issues,
+    )
+
+
+def _locate_face_bytes(asset: FontAsset) -> Path | None:
+    """Locate verified font bytes on disk by hash (Stage 5 §4).
+
+    The asset record keeps only a basename; the file is re-found under the
+    known font roots and accepted only when its SHA-256 matches the record.
+    """
+    import hashlib
+
+    ref = asset.asset
+    if ref is None or not ref.sha256:
+        return None
+    candidates: list[Path] = []
+    for root in ("~/Library/Fonts", "/Library/Fonts",
+                 "/System/Library/Fonts"):
+        base = Path(root).expanduser()
+        if base.is_dir():
+            candidates.extend(base.rglob(ref.relative_path))
+    for path in candidates:
+        try:
+            if hashlib.sha256(path.read_bytes()).hexdigest() == ref.sha256:
+                return path
+        except OSError:
+            continue
+    return None

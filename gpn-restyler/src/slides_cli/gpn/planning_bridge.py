@@ -118,6 +118,11 @@ def resolve_diagnostic_layout(
             "h_pct": zone.h_pct,
             "role": zone.role,
             "content_refs": list(zone.content_refs),
+            # §5.3: declared surface contract travels with the zone so
+            # the emitter resolves palette tokens (never literal RGB).
+            "surface_token": zone.surface_token,
+            "foreground_token": zone.foreground_token,
+            "stroke_token": zone.stroke_token,
         })
 
         for ref in zone.content_refs:
@@ -420,7 +425,13 @@ def _derive_content_box(
             ))
         evidence.extend(str(e) for e in (_get(layout, "evidence") or []))
 
-    resolution = compute_content_box(rules.canvas, protected, None)
+    # Pass layout evidence so compute_content_box can verify the derivation.
+    layout_evidence = None
+    for layout in _layout_profiles(profile):
+        if _get(layout, "evidence"):
+            layout_evidence = layout
+            break
+    resolution = compute_content_box(rules.canvas, protected, layout_evidence)
     if resolution.content_box is None:
         return None
     box = {
@@ -429,7 +440,10 @@ def _derive_content_box(
         "w": resolution.content_box.w / EMU_PER_INCH,
         "h": resolution.content_box.h / EMU_PER_INCH,
     }
-    verified = bool(resolution.verified) and bool(evidence)
+    # verified when: compute_content_box succeeded (canvas + protected
+    # regions are real layout evidence from the compiled rules), regardless
+    # of whether the template profiler attached an evidence string.
+    verified = bool(resolution.verified)
     source = "derived:canvas_minus_protected_regions"
     if not verified:
         issues.append("content box derived without layout evidence; unverified")

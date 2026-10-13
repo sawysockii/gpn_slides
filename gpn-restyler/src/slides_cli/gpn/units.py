@@ -116,3 +116,37 @@ def bounding_box_of_corners(corners: tuple[PointPt, ...]) -> RectPt:
     min_x, max_x = min(xs), max(xs)
     min_y, max_y = min(ys), max(ys)
     return RectPt(x=min_x, y=min_y, w=max_x - min_x, h=max_y - min_y)
+
+
+def convex_polygons_intersect(poly_a: tuple[PointPt, ...],
+                              poly_b: tuple[PointPt, ...]) -> bool:
+    """Separating Axis Theorem for two convex polygons.
+
+    This is the real narrow phase for rotated/group geometry; the axis-aligned
+    bounding box of transformed corners stays a broad phase only. Degenerate
+    (zero-length) edges and empty polygons are treated conservatively.
+    """
+    if len(poly_a) < 3 or len(poly_b) < 3:
+        return False
+    for poly in (poly_a, poly_b):
+        n = len(poly)
+        for i in range(n):
+            p1 = poly[i]
+            p2 = poly[(i + 1) % n]
+            axis = (p2.y - p1.y, -(p2.x - p1.x))
+            if abs(axis[0]) < 1e-12 and abs(axis[1]) < 1e-12:
+                continue
+            a_dots = [axis[0] * p.x + axis[1] * p.y for p in poly_a]
+            b_dots = [axis[0] * p.x + axis[1] * p.y for p in poly_b]
+            if max(a_dots) < min(b_dots) or max(b_dots) < min(a_dots):
+                return False
+    return True
+
+
+def transformed_rects_intersect(box_a: RectPt, transform_a: Affine2D,
+                                box_b: RectPt,
+                                transform_b: Affine2D) -> bool:
+    """Polygon intersection of two affine-transformed rectangles (narrow phase)."""
+    return convex_polygons_intersect(
+        transform_rect_corners(box_a, transform_a),
+        transform_rect_corners(box_b, transform_b))

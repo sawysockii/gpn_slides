@@ -525,3 +525,243 @@ def validate_reference_style(
         unresolved=unresolved,
         composition_reusable=not violations,
     )
+
+
+# ---------------------------------------------------------------------------
+# §5.2: verified corporate frame (rule-driven, evidence-backed)
+# ---------------------------------------------------------------------------
+
+def _pt_to_emu(v: float) -> int:
+    return int(round(v * EMU_PER_PT))
+
+
+def _layout_placeholder_boxes(
+    layout_xml: bytes,
+) -> tuple[list[dict[str, Any]], str]:
+    """Re-derive footer/title placeholder boxes from layout XML bytes.
+
+    Returns (regions, xml_sha256). Each region: {role, x, y, w, h} in EMU
+    plus the placeholder type evidence. Never trusts an unverified profile
+    claim: geometry is re-parsed from the part bytes here.
+    """
+    root = etree.fromstring(layout_xml)
+    regions: list[dict[str, Any]] = []
+    for sp in root.findall(".//p:cSld/p:spTree/p:sp", NS):
+        nvpr = sp.find("p:nvSpPr/p:cNvPr", NS)
+        nvph = sp.find("p:nvSpPr/p:nvPr/p:ph", NS)
+        if nvph is None:
+            continue
+        ph_type = nvph.get("type", "body")
+        if ph_type not in ("ftr", "sldNum", "dt", "hdr", "title", "ctrTitle"):
+            continue
+        xfrm = sp.find("p:spPr/a:xfrm", NS)
+        if xfrm is None:
+            continue
+        off = xfrm.find("a:off", NS)
+        ext = xfrm.find("a:ext", NS)
+        if off is None or ext is None:
+            continue
+        try:
+            regions.append({
+                "role": ("protected_footer" if ph_type in
+                         ("ftr", "sldNum", "dt", "hdr") else "title"),
+                "ph_type": ph_type,
+                "name": nvpr.get("name", "") if nvpr is not None else "",
+                "x": int(off.get("x", 0)), "y": int(off.get("y", 0)),
+                "w": int(ext.get("cx", 0)), "h": int(ext.get("cy", 0)),
+            })
+        except (TypeError, ValueError):
+            continue
+    return regions, sha256_bytes(layout_xml)
+
+
+def resolve_frame_profile(
+    *,
+    canvas: RectEMU,
+    template_profile: TemplateProfile,
+    base_template_path: Path | None,
+    rule_refs: list[str],
+) -> dict[str, Any]:
+    """Derive the normative frame from JSON canvas + layout XML evidence.
+
+    Protected footer/title regions are re-parsed from the actual layout
+    parts referenced by the profile (not copied from its unverified boxes).
+    The content region is canvas minus protected strips. A missing
+    mandatory element is never filled with an arbitrary full canvas +
+    verified=true: without layout evidence the frame is FrameNeedsEvidence.
+    """
+    import hashlib as _hashlib
+
+    regions: list[dict[str, Any]] = []
+    layout_evidence: list[dict[str, Any]] = []
+    findings: list[str] = []
+    layout_ids: list[str] = []
+    if base_template_path is not None and Path(base_template_path).is_file():
+        try:
+            with zipfile.ZipFile(base_template_path) as zf:
+                names = [n for n in zf.namelist()
+                         if n.startswith("ppt/slideLayouts/")
+                         and n.endswith(".xml")]
+                for name in sorted(names):
+                    xml = zf.read(name)
+                    boxes, xml_sha = _layout_placeholder_boxes(xml)
+                    if boxes:
+                        layout_ids.append(name)
+                        layout_evidence.append({
+                            "layout_part": name, "xml_sha256": xml_sha,
+                            "placeholders": boxes})
+                        regions.extend([{**b, "layout_part": name}
+                                        for b in boxes])
+        except (OSError, ValueError, KeyError) as exc:
+            findings.append(f"layout parse failed: {exc}")
+    else:
+        findings.append("no base template available")
+
+    protected = [r for r in regions if r["role"] == "protected_footer"]
+    if not protected:
+        return {
+            "status": "needs_evidence",
+            "canvas": {"x": 0, "y": 0, "w": canvas.w, "h": canvas.h},
+            "findings": findings + ["no protected footer placeholders "
+                                    "found in layout evidence"],
+            "rule_refs": rule_refs,
+        }
+
+    protected_emu = [RectEMU(x=r["x"], y=r["y"], w=r["w"], h=r["h"])
+                     for r in protected]
+    resolution = compute_content_box(canvas, protected_emu,
+                                     verified_layout_evidence=None)
+    content = resolution.content_box
+    frame = {
+        "status": "verified",
+        "canvas": {"x": 0, "y": 0, "w": canvas.w, "h": canvas.h},
+        "content_region": ({"x": content.x, "y": content.y,
+                            "w": content.w, "h": content.h}
+                           if content else None),
+        "protected_regions": [
+            {"role": r["role"], "ph_type": r["ph_type"],
+             "box_emu": {"x": r["x"], "y": r["y"],
+                         "w": r["w"], "h": r["h"]},
+             "layout_part": r["layout_part"]} for r in protected],
+        "title_regions": [
+            {"role": r["role"], "ph_type": r["ph_type"],
+             "box_emu": {"x": r["x"], "y": r["y"],
+                         "w": r["w"], "h": r["h"]},
+             "layout_part": r["layout_part"]}
+            for r in regions if r["role"] == "title"],
+        "applicable_layout_ids": sorted(set(layout_ids)),
+        "layout_evidence": layout_evidence,
+        "rule_refs": rule_refs,
+        "derivation": ("protected footer/title boxes re-parsed from "
+                       "layout part XML; content region = canvas minus "
+                       "protected strips"),
+        "frame_sha256": _hashlib.sha256(
+            repr(sorted((r["layout_part"], r["ph_type"], r["x"], r["y"],
+                         r["w"], r["h"]) for r in regions)).encode()
+        ).hexdigest(),
+        "findings": findings,
+    }
+    return frame
+
+
+def check_saved_frame(
+    candidate_path: Path,
+    frame: dict[str, Any],
+) -> dict[str, Any]:
+    """Verify the corporate frame on reopened candidate bytes (§5.2.5).
+
+    Checks: canvas matches; every slide carries footer furniture
+    (sldNum/ftr placeholder or slidenum field); no non-placeholder shape
+    overlaps a protected region. All geometry is re-parsed from the saved
+    package XML — never from expected IR or stale caches.
+    """
+    report: dict[str, Any] = {
+        "candidate": str(candidate_path),
+        "frame_sha256": frame.get("frame_sha256", ""),
+        "checks": [], "violations": [], "ok": False,
+    }
+
+    def check(name: str, passed: bool, detail: str = "") -> None:
+        report["checks"].append(
+            {"check": name, "passed": passed, "detail": detail})
+        if not passed:
+            report["violations"].append(f"{name}: {detail}")
+
+    try:
+        with zipfile.ZipFile(candidate_path) as zf:
+            names = zf.namelist()
+            slide_parts = sorted(n for n in names
+                                 if n.startswith("ppt/slides/slide")
+                                 and n.endswith(".xml"))
+            pres_root = etree.fromstring(zf.read("ppt/presentation.xml"))
+    except (OSError, ValueError, KeyError) as exc:
+        check("package_readable", False, str(exc))
+        return report
+    check("package_readable", True)
+
+    canvas = frame.get("canvas", {})
+    exp_w, exp_h = int(canvas.get("w", 0)), int(canvas.get("h", 0))
+    sld_sz = pres_root.find("p:sldSz", NS)
+    if sld_sz is not None:
+        try:
+            got_w, got_h = int(sld_sz.get("cx", 0)), int(sld_sz.get("cy", 0))
+        except (TypeError, ValueError):
+            got_w, got_h = 0, 0
+        check("canvas_matches", got_w == exp_w and got_h == exp_h,
+              f"package={got_w}x{got_h} frame={exp_w}x{exp_h}")
+    else:
+        check("canvas_matches", False, "no sldSz")
+
+    protected = [r["box_emu"] for r in
+                 frame.get("protected_regions", [])]
+
+    def overlaps(a: dict[str, int], b: dict[str, int]) -> bool:
+        return not (a["x"] + a["w"] <= b["x"] or b["x"] + b["w"] <= a["x"]
+                    or a["y"] + a["h"] <= b["y"]
+                    or b["y"] + b["h"] <= a["y"])
+
+    with zipfile.ZipFile(candidate_path) as zf:
+        for part in slide_parts:
+            try:
+                root = etree.fromstring(zf.read(part))
+            except (ValueError, KeyError):
+                check(f"{part}_readable", False, "unparseable")
+                continue
+            has_footer = False
+            for sp in root.findall(".//p:cSld/p:spTree/p:sp", NS):
+                nvph = sp.find("p:nvSpPr/p:nvPr/p:ph", NS)
+                if nvph is not None and nvph.get("type", "") in (
+                        "ftr", "sldNum", "dt", "hdr"):
+                    has_footer = True
+                    continue
+                if sp.find(".//a:fld[@type='slidenum']", NS) is not None:
+                    has_footer = True
+                    continue
+                if nvph is not None:
+                    continue  # other placeholders are furniture, not content
+                xfrm = sp.find("p:spPr/a:xfrm", NS)
+                if xfrm is None:
+                    continue
+                off = xfrm.find("a:off", NS)
+                ext = xfrm.find("a:ext", NS)
+                if off is None or ext is None:
+                    continue
+                try:
+                    box = {"x": int(off.get("x", 0)),
+                           "y": int(off.get("y", 0)),
+                           "w": int(ext.get("cx", 0)),
+                           "h": int(ext.get("cy", 0))}
+                except (TypeError, ValueError):
+                    continue
+                for prot in protected:
+                    if box["w"] > 0 and box["h"] > 0 and overlaps(box, prot):
+                        cNvPr = sp.find("p:nvSpPr/p:cNvPr", NS)
+                        nm = cNvPr.get("name", "?") if cNvPr is not None \
+                            else "?"
+                        check(f"{part}_protected_clear", False,
+                              f"shape {nm} overlaps protected region")
+                        break
+            check(f"{part}_footer_present", has_footer,
+                  "" if has_footer else "no ftr/sldNum furniture")
+    report["ok"] = not report["violations"]
+    return report

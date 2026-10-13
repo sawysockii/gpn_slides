@@ -62,6 +62,10 @@ class NativeDeckContext:
     issues: list[str] = field(default_factory=list)
     work_dir: Path | None = None
     list_profile: Any = None
+    # Stage6 brand repair: explicit run-level asset overrides
+    # ({source_object_id: {old/new_sha256, replacement_relpath, reason}}),
+    # hash-verified at emit and ledgered in issues. Empty by default.
+    asset_overrides: dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -185,8 +189,35 @@ def emit_text(
         int(box.get("w", 3657600)), int(box.get("h", 914400)),
     )
     adapter.set_no_autofit(shape)
+    adapter.strip_shape_effect_inheritance(shape)
+    # Recovery §5: clear any source-derived shape fill/line on textboxes.
+    # Text containers are authoring surfaces: normative white/no-fill with
+    # no line, never the source card color.
+    with contextlib.suppress(Exception):
+        shape.fill.background()
+    with contextlib.suppress(Exception):
+        shape.line.fill.background()
     role = resolved.get("role", getattr(payload, "role", "unknown"))
     style = _role_style(role, rules) if rules is not None else {}
+    # §5.3: a declared surface may set the foreground that stands on it
+    # (e.g. white on an allowed dark surface). The token is resolved from
+    # the loaded palette; an unknown token leaves the role color intact and
+    # is recorded, never guessed.
+    if rules is not None and style.get("color_tokens"):
+        token = style["color_tokens"][0]
+        rgb = _resolve_token_rgb(token, rules)
+        if rgb:
+            style = {**style, "resolved_rgb": rgb}
+    fg_token = str(resolved.get("foreground_token", "") or "")
+    if rules is not None and fg_token:
+        rgb = _resolve_token_rgb(fg_token, rules)
+        if rgb:
+            style = {**style, "resolved_rgb": rgb}
+        else:
+            context.issues.append(
+                f"SURFACE_TOKEN_UNKNOWN: {source_object_id} foreground "
+                f"token {fg_token!r} not in the loaded palette; role color "
+                "kept")
     paragraphs = getattr(payload, "paragraphs", []) or []
     para_transform = ("title_uppercase"
                       if style.get("uppercase") is True else "identity")
@@ -274,9 +305,10 @@ def _emit_field(p: Any, run: Any, style: dict[str, Any]) -> None:
     if style.get("default_size_pt"):
         with contextlib.suppress(TypeError, ValueError):
             rpr.set("sz", str(int(float(style["default_size_pt"]) * 100)))
-    if style.get("typeface"):
+    face = _role_face(style)
+    if face:
         latin = etree.SubElement(rpr, f"{{{A_NS}}}latin")
-        latin.set("typeface", str(style["typeface"]))
+        latin.set("typeface", face)
     t_node = etree.SubElement(fld, f"{{{A_NS}}}t")
     t_node.text = str(cached)
 
@@ -295,10 +327,44 @@ def _emit_break(p: Any, br: Any, scope: str, context: Any) -> None:
     etree.SubElement(p._p, f"{{{A_NS}}}br")
 
 
+def _resolve_token_rgb(token: Any, rules: Any) -> str | None:
+    """Resolve a color token to 6-hex RGB via the compiled palette."""
+    if not isinstance(token, str):
+        return None
+    bare = token.strip().lstrip("#").upper()
+    if len(bare) == 6 and all(ch in "0123456789ABCDEF" for ch in bare):
+        return bare
+    colors = dict(getattr(rules, "colors", {}) or {})
+    value = colors.get(token)
+    if isinstance(value, str):
+        bare = value.strip().lstrip("#").upper()
+        if len(bare) == 6 and all(ch in "0123456789ABCDEF" for ch in bare):
+            return bare
+    # Conditional palette entries (JSON-declared usage + evidence refs).
+    conditional = getattr(rules, "conditional_colors", {}) or {}
+    cond = conditional.get(token) if isinstance(conditional, dict) else None
+    rgb = getattr(cond, "rgb", "") if cond is not None else ""
+    bare = str(rgb or "").strip().lstrip("#").upper()
+    if len(bare) == 6 and all(ch in "0123456789ABCDEF" for ch in bare):
+        return bare
+    return None
+
+
+def _role_face(style: dict[str, Any]) -> str:
+    """Exact corporate face for a role style (normative, never themed)."""
+    face = style.get("typeface") or (
+        (style.get("allowed_faces") or [None])[0])
+    return str(face) if face else ""
+
+
 def _style_run(run: Any, style: dict[str, Any], source_run: Any) -> None:
     font = run.font
-    if style.get("typeface"):
-        font.name = style["typeface"]
+    # Corporate face: the exact resolved role face is the normative
+    # typeface. Without it every run silently falls back to the theme
+    # default and no render check can confirm corporate typography.
+    face = _role_face(style)
+    if face:
+        font.name = face
     size = style.get("default_size_pt")
     if size:
         try:
@@ -306,17 +372,28 @@ def _style_run(run: Any, style: dict[str, Any], source_run: Any) -> None:
             font.size = Pt(float(size))
         except (TypeError, ValueError):
             pass
-    rgb = _hex_to_rgb((style.get("color_tokens") or [None])[0]
-                      if style.get("color_tokens") else None)
-    if rgb:
-        from pptx.dml.color import RGBColor
-        font.color.rgb = RGBColor(*rgb)
-    src_style = getattr(source_run, "source_style", None)
-    if src_style is not None:
-        if getattr(src_style, "bold", None) is True:
-            font.bold = True
-        if getattr(src_style, "italic", None) is True:
-            font.italic = True
+    rgb = _hex_to_rgb(style.get("resolved_rgb") or
+                      ((style.get("color_tokens") or [None])[0]
+                       if style.get("color_tokens") else None))
+    # Recovery §5 (resolve_authoring_style): every authoring run carries an
+    # explicit approved foreground. Roles without color_tokens fall back to
+    # the normative black token (000000 from the loaded palette), never to
+    # inherited tx1 which is unreadable on colored surfaces.
+    if rgb is None:
+        rgb = (0, 0, 0)
+    from pptx.dml.color import RGBColor
+    font.color.rgb = RGBColor(*rgb)
+    # Recovery §5: source bold/italic NEVER pass through as b/i flags.
+    # Source emphasis is a semantic hint resolved upstream into an exact
+    # allowed face via font policy (resolve_authoring_style); writing
+    # b=true on a Bold face is redundant (C21) and on a Regular face is
+    # synthetic (C22). The only allowed b=true is the documented
+    # Condensed-Italic exception, which the role face already encodes.
+    # Explicitly clear the flags so python-pptx/theme defaults cannot leak.
+    with contextlib.suppress(Exception):
+        font.bold = False
+    with contextlib.suppress(Exception):
+        font.italic = False
     # Preserve run-level emphasis that carries meaning (sub/superscript,
     # e.g. footnote markers): restore the OOXML baseline recorded in the
     # source semantic marks, never drop it.
@@ -457,6 +534,19 @@ def emit_table(
                 context.issues.append(f"table merge failed {(r0, c0, r1, c1)}: {exc}")
     by_coord = {(int(c.row), int(c.col)): c
                 for c in list(getattr(payload, "cells", []) or [])}
+    # Measured row heights (Stage 5 typed binding); absent without layout.
+    heights = list(getattr(payload, "row_heights_emu", []) or [])
+    if len(heights) == rows:
+        for idx, height in enumerate(heights):
+            try:
+                from pptx.util import Emu
+                table.rows[idx].height = Emu(int(height))
+            except (TypeError, ValueError):
+                context.issues.append(f"table row height failed {idx}")
+    # Corporate role for cell runs (Stage 5 binding); unknown keeps the
+    # previous unstyled behavior byte for byte.
+    role = layout.get("role", "unknown")
+    style = _role_style(role, rules) if rules is not None else {}
     for (row, col), cell in sorted(by_coord.items()):
         try:
             target = table.cell(row, col)
@@ -477,6 +567,7 @@ def emit_table(
                 for run in list(getattr(para, "runs", []) or []):
                     r = p.add_run()
                     r.text = str(getattr(run, "text", ""))
+                    _style_run(r, style, run)
         context.output_map.append(OutputSubBinding(
             source_atom_id=getattr(cell, "id", f"cell-{row}-{col}"),
             target_address=_address_of(slide, frame, "table"),
@@ -818,25 +909,177 @@ def emit_shape(
     source_object_id: str = "",
 ) -> OutputShapeAddress:
     box = resolved.get("box_emu") or {}
-    shape = adapter.add_textbox(
-        slide, int(box.get("x", 914400)), int(box.get("y", 914400)),
-        int(box.get("w", 1828800)), int(box.get("h", 914400)))
     text = getattr(payload, "text", None)
-    if text is not None:
+    paras = list(getattr(text, "paragraphs", []) or []) \
+        if text is not None else []
+    has_text = any("".join(getattr(r, "text", "") or ""
+                           for r in list(getattr(p, "runs", []) or []))
+                   or getattr(getattr(r, "field", None), "cached_text", "")
+                   for p in paras for r in list(getattr(p, "runs", []) or []))
+    if text is not None and has_text:
+        shape = adapter.add_textbox(
+            slide, int(box.get("x", 914400)), int(box.get("y", 914400)),
+            int(box.get("w", 1828800)), int(box.get("h", 914400)))
         shape.text_frame.clear()
         emit_text(text, {"box_emu": box,
-                         "role": getattr(text, "role", "unknown")},
+                         "role": resolved.get(
+                             "role", getattr(text, "role", "unknown"))},
                   slide, context, rules=rules,
                   source_object_id=source_object_id)
         # Remove the placeholder box; emit_text created the real one.
         shape._element.getparent().remove(shape._element)
         record = context.emission_records[-1]
         return record.address  # type: ignore[return-value]
-    address = _address_of(slide, shape, "shape")
+    # Pure decoration (no text): recovery §3/§5 — source decorative fills
+    # and rounded-card geometry are NOT preserved as authoring style.
+    # The blue 0C539F roundRect cards are decoration (decoration_decisions),
+    # not required business atoms. Emit permitted RECTANGLE geometry with
+    # normative transparent fill so C01/C03 pass on saved bytes; the
+    # semantic content (if any) travels via bound text objects.
+    token = str(getattr(payload, "geometry_token", "") or "")
+    # Recovery: roundRect is prohibited decorative geometry -> RECTANGLE.
+    norm_token = "rect" if token == "roundRect" else token
+    preset = adapter.DECOR_PRESET_MAP.get(norm_token)
+    if token == "roundRect":
+        context.issues.append(
+            f"GEOMETRY_NORMALIZED: {source_object_id} roundRect->rect "
+            "(C03 decorative rounded cards prohibited)")
+    placeholder = adapter.add_textbox(
+        slide, int(box.get("x", 914400)), int(box.get("y", 914400)),
+        int(box.get("w", 1828800)), int(box.get("h", 914400)))
+    address = _address_of(slide, placeholder, "shape")
+    try:
+        if norm_token == "line":
+            shape = adapter.add_straight_connector(
+                slide, int(box.get("x", 914400)), int(box.get("y", 914400)),
+                int(box.get("w", 1828800)), int(box.get("h", 914400)))
+        elif preset is not None:
+            shape = adapter.add_autoshape(
+                slide, preset, int(box.get("x", 914400)),
+                int(box.get("y", 914400)), int(box.get("w", 1828800)),
+                int(box.get("h", 914400)))
+        else:
+            context.issues.append(
+                f"GEOMETRY_UNKNOWN: {source_object_id} token {token!r}; "
+                "rect fallback recorded, not a silent pass")
+            shape = adapter.add_autoshape(
+                slide, "RECTANGLE", int(box.get("x", 914400)),
+                int(box.get("y", 914400)), int(box.get("w", 1828800)),
+                int(box.get("h", 914400)))
+        _apply_decor_fill_line(shape, payload, norm_token, source_object_id,
+                               context, rules=rules,
+                               surface=resolved.get("surface_token", ""),
+                               stroke_token=resolved.get("stroke_token", ""))
+        adapter.strip_shape_effect_inheritance(shape)
+        placeholder._element.getparent().remove(placeholder._element)
+    except Exception as exc:  # noqa: BLE001 - decor must not kill export
+        context.issues.append(f"decor emit failed {source_object_id}: {exc}")
+        return address
+    address = _address_of(slide, shape,
+                          "connector" if token == "line" else "shape")
     context.emission_records.append(EmissionRecord(
         source_object_id=source_object_id, strategy="native_rebuild",
         address=address))
+    _bind_atom(context, slide, shape, source_object_id,
+               f"{source_object_id}#shape", "geometry", "relocate")
+    # Empty text payloads still own ledger atoms (canonical ""); bind them
+    # so the preservation gate sees them, never as silent drops.
+    for pidx, para in enumerate(paras):
+        para_id = getattr(para, "id", "")
+        if para_id:
+            _bind_atom(context, slide, shape, source_object_id, para_id,
+                       f"para[{pidx}]", "identity")
     return address
+
+
+def _apply_decor_fill_line(shape: Any, payload: Any, token: str,
+                           source_object_id: str, context: Any,
+                           rules: Any = None, surface: Any = "",
+                           stroke_token: Any = "") -> None:
+    """Normative decor fill/line (recovery §5): no source passthrough.
+
+    Source fills such as 0C539F are forensic evidence, never target style
+    defaults. Decorative autoshapes get no fill (background) and connectors
+    keep a normative line only when its color is in the loaded palette;
+    otherwise the line is cleared. Every decision uses the ontology
+    snapshot palette — no literal allowlist lives here.
+    """
+    from pptx.util import Emu
+
+    palette: set[str] = set()
+    if rules is not None:
+        colors = dict(getattr(rules, "colors", {}) or {})
+        palette = {str(v).strip().lstrip("#").upper() for v in colors.values()}
+        conditional = getattr(rules, "conditional_colors", {}) or {}
+        if isinstance(conditional, dict):
+            for cond in conditional.values():
+                rgb = getattr(cond, "rgb", "")
+                if rgb:
+                    palette.add(str(rgb).strip().lstrip("#").upper())
+    is_connector = token == "line"
+    surface_rgb = _resolve_token_rgb(surface, rules) if rules is not None \
+        else None
+    try:
+        if is_connector:
+            pass  # line handling below; connectors carry no fill
+        elif surface_rgb:
+            # §5.3: a declared surface container keeps a *palette* fill.
+            # The RGB comes from the loaded JSON, never from the source
+            # forensic fill and never from a literal in this module.
+            from pptx.dml.color import RGBColor
+            shape.fill.solid()
+            shape.fill.fore_color.rgb = RGBColor.from_string(surface_rgb)
+            context.issues.append(
+                f"SURFACE_APPLIED: {source_object_id} fill token "
+                f"{surface!r} -> #{surface_rgb}")
+        else:
+            if str(surface or "").strip():
+                context.issues.append(
+                    f"SURFACE_TOKEN_UNKNOWN: {source_object_id} surface "
+                    f"token {surface!r} not in the loaded palette; "
+                    "normative no-fill applied")
+            with contextlib.suppress(Exception):
+                shape.fill.background()
+            context.issues.append(
+                f"DECOR_FILL_NORMALIZED: {source_object_id} source fill "
+                "dropped; normative no-fill applied (C01)")
+    except Exception as exc:  # noqa: BLE001 - keep geometry, flag style
+        context.issues.append(
+            f"decor fill not normalized {source_object_id}: {exc}")
+    line = getattr(payload, "source_line", None)
+    color = getattr(line, "color", None) if line is not None else None
+    stroke_rgb = _resolve_token_rgb(stroke_token, rules) \
+        if rules is not None else None
+    try:
+        val = stroke_rgb or (
+            str(getattr(color, "value", "") or "").strip().lstrip("#").upper()
+            if color is not None else "")
+        if stroke_rgb:
+            from pptx.dml.color import RGBColor
+            shape.line.color.rgb = RGBColor.from_string(stroke_rgb)
+            context.issues.append(
+                f"STROKE_APPLIED: {source_object_id} stroke token "
+                f"{stroke_token!r} -> #{stroke_rgb}")
+            return
+        if color is not None and getattr(color, "kind", "") == "srgb" and val:
+            if val in palette:
+                from pptx.dml.color import RGBColor
+                shape.line.color.rgb = RGBColor.from_string(val)
+                width = getattr(line, "width_emu", None)
+                if width:
+                    shape.line.width = Emu(int(width))
+            else:
+                with contextlib.suppress(Exception):
+                    shape.line.fill.background()
+                context.issues.append(
+                    f"DECOR_LINE_NORMALIZED: {source_object_id} source line "
+                    f"{val} not in palette; cleared (C01)")
+        elif color is None:
+            with contextlib.suppress(Exception):
+                shape.line.fill.background()
+    except Exception as exc:  # noqa: BLE001
+        context.issues.append(
+            f"decor line not normalized {source_object_id}: {exc}")
 
 
 def emit_group(
@@ -856,6 +1099,7 @@ def emit_group(
         _emit_group_child(group, child, resolved, slide, context,
                           rules=rules, source_object_id=source_object_id,
                           position=(cidx,), root_group=group)
+    _write_group_xfrm(group, payload, resolved)
     address = _address_of(slide, group, "group")
     context.emission_records.append(EmissionRecord(
         source_object_id=source_object_id, strategy="native_rebuild",
@@ -924,9 +1168,63 @@ def _emit_group_child(group: Any, child: Any, resolved: dict[str, Any],
                               rules=rules, source_object_id=source_object_id,
                               position=(*position, gidx),
                               root_group=anchor)
+        _write_group_xfrm(nested, payload, resolved)
     else:
         context.issues.append(
             f"group child kind {kind} needs_review")
+
+
+def _write_group_xfrm(group_shape: Any, payload: Any,
+                      resolved: dict[str, Any]) -> None:
+    """Serialize the group-space transform (off/ext/child/rot/flip).
+
+    Children are emitted in group-local coordinates; without the source
+    transform the group collapses to the origin and every saved-geometry
+    and collision check fails downstream.
+    """
+    from pptx.oxml.ns import qn
+
+    box = resolved.get("box_emu") or {}
+    grp = group_shape._element.find(qn("p:grpSpPr"))
+    if grp is None:
+        return
+    xfrm = grp.find(qn("a:xfrm"))
+    if xfrm is None:
+        xfrm = etree.SubElement(grp, qn("a:xfrm"))
+    off = xfrm.find(qn("a:off"))
+    if off is None:
+        off = etree.SubElement(xfrm, qn("a:off"))
+    off.set("x", str(int(box.get("x", 914400))))
+    off.set("y", str(int(box.get("y", 914400))))
+    ext = xfrm.find(qn("a:ext"))
+    if ext is None:
+        ext = etree.SubElement(xfrm, qn("a:ext"))
+    ext.set("cx", str(max(int(box.get("w", 1828800)), 1)))
+    ext.set("cy", str(max(int(box.get("h", 914400)), 1)))
+    child_box = getattr(payload, "source_child_box", None)
+    if child_box is not None:
+        ch_off = xfrm.find(qn("a:chOff"))
+        if ch_off is None:
+            ch_off = etree.SubElement(xfrm, qn("a:chOff"))
+        ch_off.set("x", str(int(getattr(child_box, "x", 0) or 0)))
+        ch_off.set("y", str(int(getattr(child_box, "y", 0) or 0)))
+        ch_ext = xfrm.find(qn("a:chExt"))
+        if ch_ext is None:
+            ch_ext = etree.SubElement(xfrm, qn("a:chExt"))
+        ch_ext.set("cx", str(max(int(getattr(child_box, "w", 0) or 0), 1)))
+        ch_ext.set("cy", str(max(int(getattr(child_box, "h", 0) or 0), 1)))
+    try:
+        rot = float(getattr(payload, "rot_deg", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        rot = 0.0
+    if rot:
+        xfrm.set("rot", str(int(round(rot * 60000))))
+    elif "rot" in xfrm.attrib:
+        del xfrm.attrib["rot"]
+    if getattr(payload, "flip_h", False):
+        xfrm.set("flipH", "1")
+    if getattr(payload, "flip_v", False):
+        xfrm.set("flipV", "1")
 
 
 def _child_box(child: Any, resolved: dict[str, Any]) -> dict[str, int]:
@@ -959,16 +1257,65 @@ def emit_image(
     digest = getattr(asset, "sha256", "") if asset is not None else ""
     if not digest or context.asset_store is None:
         raise ValueError("image payload has no retrievable asset bytes")
-    blob: bytes | None = None
-    if context.asset_store is not None:
-        root = getattr(context.asset_store, "root", None)
-        if root is not None:
-            matches = sorted(Path(root).glob(f"*/{digest}.*"))
-            if matches:
-                blob = matches[0].read_bytes()
-    if blob is None:
-        raise ValueError("image payload has no retrievable asset bytes")
-    suffix = ".png"
+    from .assets import _extension_for, resolve_asset_bytes
+    # Stage6 brand repair: an explicit run-level asset override swaps one
+    # source object's bytes for an approved variant (same mark, visible
+    # colorway) with old/new hashes recorded. Never a silent substitution:
+    # the override entry must match the payload digest, replacement bytes
+    # are hash-verified, and the swap is ledgered in context issues.
+    override = (getattr(context, "asset_overrides", {}) or {}).get(
+        source_object_id)
+    override_blob: bytes | None = None
+    override_media = ""
+    if override is not None:
+        import hashlib as _hashlib
+
+        if str(override.get("old_sha256", "")) != digest:
+            raise ValueError(
+                f"ASSET_OVERRIDE_MISMATCH: {source_object_id}: override "
+                "old_sha256 does not match payload asset; refusing swap")
+        store = context.asset_store
+        base = getattr(getattr(store, "root", None), "__str__", lambda: "")()
+        cand = Path(base) / str(override.get("replacement_relpath", ""))
+        if not cand.is_file():
+            raise ValueError(
+                f"REQUIRED_ASSET_UNRESOLVED: {source_object_id}: override "
+                f"replacement bytes missing: {cand}")
+        override_blob = cand.read_bytes()
+        actual = _hashlib.sha256(override_blob).hexdigest()
+        if actual != str(override.get("new_sha256", "")):
+            raise ValueError(
+                f"ASSET_OVERRIDE_MISMATCH: {source_object_id}: replacement "
+                "bytes fail new_sha256 verification; refusing swap")
+        override_media = str(override.get("media_type", "image/png"))
+        context.issues.append(
+            f"ASSET_OVERRIDE_APPLIED: {source_object_id} "
+            f"{digest[:16]} -> {actual[:16]} "
+            f"({override.get('reason', '')})")
+    tctx = getattr(context, "transplant_context", None)
+    try:
+        resolved_asset = resolve_asset_bytes(
+            asset,
+            stores=[context.asset_store] if context.asset_store is not None else [],
+            source_parts=dict(getattr(tctx, "source_parts", {}) or {}) or None,
+            source_content_types=dict(getattr(tctx, "source_content_types", {}) or {}) or None,
+        )
+    except Exception as exc:
+        raise ValueError(
+            f"REQUIRED_ASSET_UNRESOLVED: {source_object_id}: {exc}") from exc
+    blob = override_blob if override_blob is not None else resolved_asset.data
+    if override_blob is not None:
+        suffix = _extension_for(override_media or "image/png")
+    elif resolved_asset.source_kind == "source_opc":
+        context.issues.append(
+            f"ASSET_RECOVERED_FROM_SOURCE_OPC: {source_object_id} "
+            f"{resolved_asset.provenance} sha={digest[:16]}")
+        suffix = _extension_for(resolved_asset.media_type or "image/png")
+    else:
+        suffix = _extension_for(resolved_asset.media_type or "image/png")
+    # Pillow/python-pptx sniff by content; keep the true container suffix
+    # (jpeg stays .jpg, svg/emf keep their suffix and fail loudly later
+    # instead of masquerading as .png).
     linked = getattr(payload, "linked_uri", None)
     if linked:
         context.issues.append(f"linked media kept as URI, not fetched: {linked}")
@@ -991,6 +1338,79 @@ def emit_image(
         source_object_id=source_object_id, strategy="native_rebuild",
         address=address))
     return address
+
+
+def emit_free_connector(
+    payload: Any,
+    resolved: dict[str, Any],
+    slide: Any,
+    context: NativeDeckContext,
+    *,
+    rules: Any = None,
+    source_object_id: str = "",
+) -> OutputShapeAddress:
+    """Emit an endpoint-less connector as a native straight line.
+
+    No relation exists to preserve; the visible geometry is kept and the
+    diagram_node atom bound (an edge atom could never be verified here).
+    Connector line styling has no source-face binding yet and stays
+    default — recorded, not silently claimed.
+    """
+    box = resolved.get("box_emu") or {}
+    conn = adapter.add_straight_connector(
+        slide, int(box.get("x", 914400)), int(box.get("y", 914400)),
+        int(box.get("w", 1828800)), int(box.get("h", 0)))
+    adapter.strip_shape_effect_inheritance(conn)
+    # A bound arrow is a required relation (§6.2.4): its direction is
+    # semantic, so the arrowhead is preserved. Colour comes only from a
+    # declared palette token — never from a source RGB passthrough.
+    line = getattr(payload, "source_line", None)
+    begin = str(getattr(line, "begin_arrow", "") or "none") if line else "none"
+    end = str(getattr(line, "end_arrow", "") or "none") if line else "none"
+    if begin != "none" or end != "none":
+        _set_connector_arrows(conn, begin, end, source_object_id, context)
+    stroke = str(resolved.get("stroke_token", "") or "")
+    if stroke:
+        rgb = _resolve_token_rgb(stroke, rules) if rules is not None else None
+        if rgb:
+            from pptx.dml.color import RGBColor
+            conn.line.color.rgb = RGBColor.from_string(rgb)
+            width = getattr(line, "width_emu", None) if line else None
+            if width:
+                from pptx.util import Emu
+                conn.line.width = Emu(int(width))
+            context.issues.append(
+                f"STROKE_APPLIED: {source_object_id} stroke token "
+                f"{stroke!r} -> #{rgb}")
+        else:
+            context.issues.append(
+                f"SURFACE_TOKEN_UNKNOWN: {source_object_id} stroke token "
+                f"{stroke!r} not in the loaded palette")
+    address = _address_of(slide, conn, "connector")
+    context.emission_records.append(EmissionRecord(
+        source_object_id=source_object_id, strategy="native_rebuild",
+        address=address))
+    _bind_atom(context, slide, conn, source_object_id,
+               f"{source_object_id}#shape", "geometry", "relocate")
+    return address
+
+
+
+def _set_connector_arrows(conn: Any, begin: str, end: str,
+                          source_object_id: str, context: Any) -> None:
+    """Restore semantic arrowheads on a bound relation connector."""
+    from pptx.oxml.ns import qn
+    ln = conn.line._get_or_add_ln()
+    for tag, value in (("a:headEnd", begin), ("a:tailEnd", end)):
+        if value in ("", "none"):
+            continue
+        existing = ln.find(qn(tag))
+        if existing is None:
+            existing = ln.makeelement(qn(tag), {})
+            ln.append(existing)
+        existing.set("type", value if value != "none" else "none")
+    context.issues.append(
+        f"ARROWHEAD_PRESERVED: {source_object_id} begin={begin} end={end}")
 
 
 def emit_connectors(
@@ -1124,17 +1544,108 @@ def _fresh_output_shape_id(slide: Any) -> int:
 # §10 notes, links, slide emission
 # ---------------------------------------------------------------------------
 
+def _notes_text_placeholder(notes_slide: Any) -> Any | None:
+    """Locate the notes body placeholder (type body/idx 1) on a notes slide."""
+    try:
+        placeholders = list(notes_slide.placeholders)
+    except Exception:  # noqa: BLE001 - notes slide without placeholders
+        return None
+    for ph in placeholders:
+        try:
+            ph_type = ph.placeholder_format.type
+        except Exception:  # noqa: BLE001
+            continue
+        if str(ph_type).endswith("BODY") or "BODY" in str(ph_type):
+            return ph
+    for ph in placeholders:
+        try:
+            if ph.placeholder_format.idx == 1:
+                return ph
+        except Exception:  # noqa: BLE001
+            continue
+    return placeholders[1] if len(placeholders) > 1 else None
+
+
+def _apply_notes_run_style(rpr: Any, style: Any) -> None:
+    """Apply a ResolvedTextStyle onto an a:rPr/a:brPr element."""
+    from pptx.oxml.ns import qn
+
+    if style is None:
+        return
+    size_pt = getattr(style, "size_pt", None)
+    if size_pt:
+        rpr.set("sz", str(int(round(size_pt * 100))))
+    bold = getattr(style, "bold", None)
+    if bold is not None:
+        rpr.set("b", "1" if bold else "0")
+    italic = getattr(style, "italic", None)
+    if italic is not None:
+        rpr.set("i", "1" if italic else "0")
+    underline = getattr(style, "underline", None)
+    if underline:
+        rpr.set("u", underline)
+    typeface = getattr(style, "typeface", None)
+    if typeface:
+        latin = rpr.makeelement(qn("a:latin"), {})
+        latin.set("typeface", typeface)
+        rpr.append(latin)
+    color = getattr(style, "color", None)
+    resolved_rgb = getattr(color, "resolved_rgb", None) if color else None
+    if resolved_rgb:
+        fill = rpr.makeelement(qn("a:solidFill"), {})
+        clr = rpr.makeelement(qn("a:srgbClr"), {})
+        clr.set("val", resolved_rgb)
+        fill.append(clr)
+        rpr.append(fill)
+    language = getattr(style, "language", None)
+    if language:
+        rpr.set("lang", language)
+
+
 def copy_notes(source_notes: list[Any], output_slide: Any,
                context: NativeDeckContext,
                source_slide_id: str = "") -> dict[str, Any]:
-    """Copy notes paragraphs/runs into the output notes slide."""
+    """Copy notes paragraphs 1:1 into the output notes slide.
+
+    Each source paragraph maps to exactly one output paragraph; soft breaks
+    (``a:br`` carriers) are emitted as ``a:br`` elements so paragraph count
+    and break structure are preserved (a naive ``"\\n".join`` would turn a
+    leading break-only paragraph into an extra empty paragraph and lose the
+    ``notes:\\n`` atom).
+    """
+    from pptx.oxml.ns import qn
+
     try:
         notes_slide = output_slide.notes_slide
     except Exception as exc:
         return {"ok": False, "reason": str(exc)}
-    texts = []
+    ph = _notes_text_placeholder(notes_slide)
+    if ph is None:
+        return {"ok": False, "reason": "notes_placeholder_missing"}
+    tx_body = ph.text_frame._txBody
+    break_after = set()
     for para in source_notes or []:
-        texts.append("".join(getattr(r, "text", "") for r in getattr(para, "runs", [])))
+        for br in getattr(para, "breaks", []) or []:
+            after = getattr(br, "after_run_id", "")
+            if after:
+                break_after.add(after)
+    for old_p in tx_body.findall(qn("a:p")):
+        tx_body.remove(old_p)
+    for para in source_notes or []:
+        p_elem = etree.SubElement(tx_body, qn("a:p"))
+        for run in getattr(para, "runs", []) or []:
+            run_id = getattr(run, "id", "")
+            style = getattr(run, "source_style", None)
+            if run_id in break_after:
+                br = etree.SubElement(p_elem, qn("a:br"))
+                rpr = etree.SubElement(br, qn("a:rPr"))
+                _apply_notes_run_style(rpr, style)
+                continue
+            r = etree.SubElement(p_elem, qn("a:r"))
+            rpr = etree.SubElement(r, qn("a:rPr"))
+            _apply_notes_run_style(rpr, style)
+            t = etree.SubElement(r, qn("a:t"))
+            t.text = getattr(run, "text", "") or ""
         if getattr(para, "id", ""):
             try:
                 address = _address_of(output_slide,
@@ -1149,10 +1660,7 @@ def copy_notes(source_notes: list[Any], output_slide: Any,
                 origin="exporter",
                 evidence=[f"slide:{source_slide_id}"],
             ))
-    if texts and notes_slide.placeholders:
-        with contextlib.suppress(IndexError, AttributeError):
-            notes_slide.placeholders[1].text = "\n".join(texts)
-    return {"ok": True, "paragraphs": len(texts)}
+    return {"ok": True, "paragraphs": len(source_notes or [])}
 
 
 def remap_hyperlinks(context: NativeDeckContext) -> dict[str, Any]:

@@ -6,6 +6,7 @@ added by later stages. All serializable models use ``extra="forbid"``.
 
 from __future__ import annotations
 
+import json
 import math
 from enum import StrEnum
 from pathlib import Path
@@ -787,6 +788,12 @@ class GroupPayload(BaseModel):
     local_transform: Affine2D = Field(default_factory=Affine2D)
     source_child_box: RectEMU | None = None
     text: TextPayload | None = None
+    # Stage 5: raw group-space transform for faithful native emission
+    # (rotation/nonuniform scale/flips). The Affine2D above drives
+    # collision math; these drive the actual xfrm serialization.
+    rot_deg: float = 0.0
+    flip_h: bool = False
+    flip_v: bool = False
 
 
 class UnknownPayload(BaseModel):
@@ -1504,3 +1511,1160 @@ class CompiledOntology(BaseModel):
     rule_registry: RuleRegistry = Field(default_factory=RuleRegistry)
     extension_contract: ExtensionContract = Field(default_factory=ExtensionContract)
     compilation_issues: list[Issue] = Field(default_factory=list)
+
+
+class DiscoveredFontFile(BaseModel):
+    """One font file found by system-wide discovery (Stage 5 §4)."""
+
+    model_config = StrictModel
+
+    path: str
+    origin: Literal["configured_fonts_dir", "user_fonts", "local_fonts",
+                    "system_fonts", "extra_root"]
+    collection_index: int | None = None
+    family: str = ""
+    full_name: str = ""
+    postscript_name: str = ""
+    subfamily: str = ""
+    sha256: str = ""
+    byte_count: int = 0
+    enabled: bool | None = None
+    duplicate_of: str = ""
+
+
+class FontDiscoveryReport(BaseModel):
+    """Result of discover_local_fonts (Stage 5 §4)."""
+
+    model_config = StrictModel
+
+    schema_version: str = "1.0"
+    platform: str = ""
+    search_roots: list[str] = Field(default_factory=list)
+    discovered: list[DiscoveredFontFile] = Field(default_factory=list)
+    faces_by_internal_name: dict[str, list[str]] = Field(default_factory=dict)
+    errors: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Stage 5 §3.1: measurement protocol models (JSON-stable, strict schema)
+# ---------------------------------------------------------------------------
+
+class MeasureRunStyle(BaseModel):
+    """Resolved run style for the measurement view (no CSS leaks in)."""
+
+    model_config = StrictModel
+
+    face_alias: str = ""
+    size_pt: float = 0.0
+    bold: bool = False
+    italic: bool = False
+    underline: str = ""
+    color_rgb: str = ""
+    language: str = ""
+    baseline_shift: Literal["none", "superscript", "subscript"] = "none"
+    uppercase: bool = False
+
+
+class MeasureRun(BaseModel):
+    model_config = StrictModel
+
+    id: str = ""
+    text: str = ""
+    style: MeasureRunStyle = Field(default_factory=MeasureRunStyle)
+
+
+class MeasureParagraph(BaseModel):
+    model_config = StrictModel
+
+    id: str = ""
+    runs: list[MeasureRun] = Field(default_factory=list)
+    space_before_pt: float = 0.0
+    space_after_pt: float = 0.0
+    line_spacing_mode: Literal["points", "multiple", "auto"] = "auto"
+    line_spacing_value: float = 0.0
+    alignment: Literal["left", "center", "right", "justify"] = "left"
+    level: int = 0
+    list_kind: Literal["none", "bullet", "numbered"] = "none"
+    first_line_indent_pt: float = 0.0
+    left_indent_pt: float = 0.0
+
+
+class MeasureComponent(BaseModel):
+    model_config = StrictModel
+
+    id: str = ""
+    kind: Literal["text", "table_cell", "chart_label", "graph_label"] = "text"
+    payload_ref: str = ""
+    paragraphs: list[MeasureParagraph] = Field(default_factory=list)
+    box_pt: RectPt = Field(default_factory=RectPt)
+    margins_pt: dict[str, float] = Field(default_factory=dict)
+    vertical_anchor: Literal["top", "middle", "bottom"] = "top"
+    wrap_policy: Literal["wrap", "nowrap"] = "wrap"
+    rotation_deg: float = 0.0
+    list_preview: dict[str, Any] = Field(default_factory=dict)
+
+
+class MeasurementFontAsset(BaseModel):
+    model_config = StrictModel
+
+    alias: str = ""
+    path: str = ""
+    sha256: str = ""
+    face_index: int | None = None
+    style: Literal["normal", "italic"] = "normal"
+    weight: int = 400
+
+
+class MeasurementRequest(BaseModel):
+    model_config = StrictModel
+
+    schema_version: str = "1.0"
+    request_id: str = ""
+    canvas_pt: dict[str, float] = Field(default_factory=dict)
+    css_px_per_in: float = 96.0
+    profile_kind: Literal["production", "test_only"] = "production"
+    components: list[MeasureComponent] = Field(default_factory=list)
+    font_assets: list[MeasurementFontAsset] = Field(default_factory=list)
+    engine_options: dict[str, object] = Field(default_factory=dict)
+    input_hashes: dict[str, str] = Field(default_factory=dict)
+    debug_output_dir: str = ""
+
+
+class FontFaceLoadStatus(BaseModel):
+    model_config = StrictModel
+
+    alias: str = ""
+    requested_path: str = ""
+    expected_sha256: str = ""
+    actual_sha256: str = ""
+    load_status: Literal["loaded", "timeout", "error", "hash_mismatch"] = "error"
+    glyph_probe: dict[str, bool] = Field(default_factory=dict)
+    synthesis_detected: bool = False
+    issues: list[str] = Field(default_factory=list)
+
+
+class FontLoadReport(BaseModel):
+    model_config = StrictModel
+
+    faces: list[FontFaceLoadStatus] = Field(default_factory=list)
+    all_loaded: bool = False
+    issues: list[str] = Field(default_factory=list)
+
+
+class MeasuredFragment(BaseModel):
+    model_config = StrictModel
+
+    paragraph_id: str = ""
+    run_id: str = ""
+    utf16_start: int = 0
+    utf16_end: int = 0
+    line_index: int = 0
+    logical_rect_pt: RectPt = Field(default_factory=RectPt)
+    ink_rect_pt: RectPt | None = None
+    baseline_pt: float | None = None
+
+
+class MeasuredText(BaseModel):
+    model_config = StrictModel
+
+    component_id: str = ""
+    source_ref: str = ""
+    available_inner_box_pt: RectPt = Field(default_factory=RectPt)
+    logical_bounds_pt: RectPt = Field(default_factory=RectPt)
+    occupied_height_pt: float = 0.0
+    intrinsic_min_width_pt: float = 0.0
+    intrinsic_preferred_width_pt: float = 0.0
+    overflow_x: bool = False
+    overflow_y: bool = False
+    excess_pt: dict[str, float] = Field(default_factory=dict)
+    fragments: list[MeasuredFragment] = Field(default_factory=list)
+    line_count: int = 0
+    paragraph_count: int = 0
+    text_origin_x_pt: float = 0.0
+    applied_transforms: list[str] = Field(default_factory=list)
+    font_evidence: list[str] = Field(default_factory=list)
+    confidence: Literal["exact_browser", "calibrated_native_proxy",
+                        "test_only", "unsupported"] = "exact_browser"
+    issues: list[str] = Field(default_factory=list)
+
+
+class MeasurementResponse(BaseModel):
+    model_config = StrictModel
+
+    schema_version: str = "1.0"
+    request_id: str = ""
+    request_hash: str = ""
+    engine: dict[str, str] = Field(default_factory=dict)
+    font_load: FontLoadReport = Field(default_factory=FontLoadReport)
+    items: list[MeasuredText] = Field(default_factory=list)
+    issues: list[str] = Field(default_factory=list)
+
+
+class MeasurementFontBinding(BaseModel):
+    """One resolved role/face/file binding inside a MeasurementFontBundle."""
+
+    model_config = StrictModel
+
+    role_or_face: str = ""
+    internal_name: str = ""
+    path: str = ""
+    sha256: str = ""
+    face_index: int | None = None
+    browser_alias: str = ""
+    missing_glyphs: list[str] = Field(default_factory=list)
+
+
+class MeasurementFontBundle(BaseModel):
+    model_config = StrictModel
+
+    schema_version: str = "1.0"
+    profile_kind: Literal["production", "test_only"] = "production"
+    bindings: list[MeasurementFontBinding] = Field(default_factory=list)
+    bundle_hash: str = ""
+    missing_faces: list[str] = Field(default_factory=list)
+    missing_glyphs: list[str] = Field(default_factory=list)
+    issues: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Stage 5 §3.1: composition + resolution models
+# ---------------------------------------------------------------------------
+
+class LayoutConstraint(BaseModel):
+    model_config = StrictModel
+
+    id: str = ""
+    kind: str = ""
+    target_ids: list[str] = Field(default_factory=list)
+    value: dict[str, Any] = Field(default_factory=dict)
+    strength: Literal["hard", "soft"] = "hard"
+    origin: Literal["ontology", "template", "source", "intent",
+                    "engineering"] = "engineering"
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class ComponentNode(BaseModel):
+    model_config = StrictModel
+
+    id: str = ""
+    kind: str = "text"
+    content_refs: list[str] = Field(default_factory=list)
+    style_role: str = ""
+    children: list[str] = Field(default_factory=list)
+    organization: str = "leaf"
+    constraints: list[LayoutConstraint] = Field(default_factory=list)
+    payload_ref: str = ""
+    renderer_id: str = ""
+
+
+class ContentBinding(BaseModel):
+    model_config = StrictModel
+
+    component_id: str = ""
+    source_object_id: str = ""
+    paragraph_ids: list[str] = Field(default_factory=list)
+    cell_ids: list[str] = Field(default_factory=list)
+    node_ids: list[str] = Field(default_factory=list)
+    representation: Literal["primary", "authorized_repeat"] = "primary"
+    permission_ref: str = ""
+
+
+class CompositionTree(BaseModel):
+    model_config = StrictModel
+
+    schema_version: str = "1.0"
+    slide_id: str = ""
+    candidate_id: str = ""
+    source_hash: str = ""
+    ontology_snapshot_hash: str = ""
+    template_hash: str = ""
+    root: ComponentNode = Field(default_factory=ComponentNode)
+    components: dict[str, ComponentNode] = Field(default_factory=dict)
+    content_bindings: list[ContentBinding] = Field(default_factory=list)
+    constraints: list[LayoutConstraint] = Field(default_factory=list)
+    protected_regions: list[dict[str, Any]] = Field(default_factory=list)
+    operator_coverage: dict[str, str] = Field(default_factory=dict)
+    issues: list[str] = Field(default_factory=list)
+
+
+class LayoutAttempt(BaseModel):
+    model_config = StrictModel
+
+    candidate_id: str = ""
+    attempt_index: int = 0
+    changes: list[dict[str, Any]] = Field(default_factory=list)
+    previous_hash: str = ""
+    measured_hash: str = ""
+    hard_issues: list[str] = Field(default_factory=list)
+    metrics: dict[str, float] = Field(default_factory=dict)
+    next_action: str = ""
+    consumed_budget: int = 0
+
+
+class LayoutResolutionResult(BaseModel):
+    model_config = StrictModel
+
+    schema_version: str = "1.0"
+    status: Literal["resolved", "infeasible", "needs_assets",
+                    "needs_review"] = "needs_review"
+    resolved_slide: dict[str, Any] = Field(default_factory=dict)
+    attempts: list[LayoutAttempt] = Field(default_factory=list)
+    addressed_issues: list[str] = Field(default_factory=list)
+    unresolved: list[str] = Field(default_factory=list)
+    measurement_profile: str = "production"
+    evidence_hashes: dict[str, str] = Field(default_factory=dict)
+
+
+class GeometryReport(BaseModel):
+    model_config = StrictModel
+
+    schema_version: str = "1.0"
+    candidate_hash: str = ""
+    checked_object_ids: list[str] = Field(default_factory=list)
+    checked_scopes: list[str] = Field(default_factory=list)
+    containment: list[dict[str, Any]] = Field(default_factory=list)
+    overlaps: list[dict[str, Any]] = Field(default_factory=list)
+    route_collisions: list[dict[str, Any]] = Field(default_factory=list)
+    unsupported_scopes: list[str] = Field(default_factory=list)
+    result: Literal["pass", "fail", "unknown"] = "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Stage 5 §12.3-12.4: native render probe + calibration
+# ---------------------------------------------------------------------------
+
+class RenderFontEvidence(BaseModel):
+    """One font observed in the native render PDF."""
+
+    model_config = StrictModel
+
+    pdf_name: str = ""
+    subtype: str = ""
+    embedded: bool = False
+    subset: bool = False
+    matched_internal_name: str = ""
+    matched_sha256: str = ""
+    is_expected: bool = False
+    suspected_substitution: bool = False
+
+
+class NativeRenderProbe(BaseModel):
+    """Result of rendering the FINAL candidate bytes natively (§12.3)."""
+
+    model_config = StrictModel
+
+    schema_version: str = "1.0"
+    candidate_path: str = ""
+    candidate_hash: str = ""
+    renderer: str = ""
+    renderer_version: str = ""
+    rendered: bool = False
+    pdf_path: str = ""
+    pdf_sha256: str = ""
+    page_count: int = 0
+    expected_page_count: int = 0
+    page_images: list[str] = Field(default_factory=list)
+    text_spans: int = 0
+    fonts: list[RenderFontEvidence] = Field(default_factory=list)
+    expected_faces: list[str] = Field(default_factory=list)
+    missing_expected_faces: list[str] = Field(default_factory=list)
+    font_substitution_detected: bool = False
+    clip_or_overlap_findings: list[str] = Field(default_factory=list)
+    checked_scopes: list[str] = Field(default_factory=list)
+    unsupported_scopes: list[str] = Field(default_factory=list)
+    support_limits: list[str] = Field(default_factory=list)
+    result: Literal["pass", "fail", "unknown"] = "unknown"
+    issues: list[str] = Field(default_factory=list)
+
+
+class CalibrationSample(BaseModel):
+    """One measured fixture sample (browser vs native physical units)."""
+
+    model_config = StrictModel
+
+    sample_id: str = ""
+    case: str = ""
+    browser_width_pt: float = 0.0
+    browser_height_pt: float = 0.0
+    native_width_pt: float = 0.0
+    native_height_pt: float = 0.0
+
+
+class CalibrationProfile(BaseModel):
+    """Browser↔native calibration envelope (§12.4)."""
+
+    model_config = StrictModel
+
+    schema_version: str = "1.0"
+    calibration_id: str = "uncalibrated-v1"
+    native_renderer: str = ""
+    faces: list[str] = Field(default_factory=list)
+    samples: list[CalibrationSample] = Field(default_factory=list)
+    max_width_delta_pt: float = 0.0
+    max_height_delta_pt: float = 0.0
+    safety_margin_pt: float = 0.0
+    coverage: Literal["full", "partial", "none"] = "none"
+    unsupported_combinations: list[str] = Field(default_factory=list)
+    sample_hashes: dict[str, str] = Field(default_factory=dict)
+    issues: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Stage 7 §3/§4: typed acceptance / expectation / evidence contract
+# ---------------------------------------------------------------------------
+
+
+class ProductScope(StrEnum):
+    RESTYLE = "restyle"
+    CREATE = "create"
+
+
+class ProviderKind(StrEnum):
+    HARNESS = "harness"
+    LOCAL_SERVER = "local_server"
+
+
+class InputKind(StrEnum):
+    PPTX = "pptx"
+    PPT = "ppt"
+    PDF = "pdf"
+    DOCX = "docx"
+    DOC = "doc"
+    MD = "md"
+    TXT = "txt"
+    PROMPT = "prompt"
+
+
+class InputSpec(BaseModel):
+    """User input declaration (§3). path/prompt_text agree with kind."""
+
+    model_config = StrictModel
+
+    kind: InputKind
+    path: Path | None = None
+    prompt_text: str | None = None
+    project_root: Path
+    output_path: Path
+    requested_slide_count: int | None = None
+    requested_scope: ProductScope = ProductScope.RESTYLE
+    provider: ProviderKind = ProviderKind.HARNESS
+    overwrite: bool = False
+
+    @model_validator(mode="after")
+    def _check_input(self) -> InputSpec:
+        if self.kind == InputKind.PROMPT:
+            if not (self.prompt_text or "").strip():
+                raise ValueError("prompt input requires prompt_text")
+        else:
+            if self.path is None:
+                raise ValueError(f"{self.kind} input requires path")
+        if self.provider == ProviderKind.LOCAL_SERVER:
+            raise ValueError("local_server provider is deferred; use harness")
+        return self
+
+
+class SnapshotSet(BaseModel):
+    """Immutable dependency fingerprints (§3)."""
+
+    model_config = StrictModel
+
+    input_sha256: str = ""
+    semantic_sha256: str = ""
+    ontology_sha256: str = ""
+    compiled_rules_sha256: str = ""
+    examples_allowlist_sha256: str = ""
+    fonts_manifest_sha256: str = ""
+    frame_sha256: str = ""
+    code_sha256: str = ""
+    schema_versions: dict[str, str] = Field(default_factory=dict)
+    engine_versions: dict[str, str] = Field(default_factory=dict)
+
+
+class CandidateKey(BaseModel):
+    """Full variant identity; never two records under one key (§3)."""
+
+    model_config = StrictModel
+
+    run_id: str
+    source_slide_id: str
+    candidate_id: str
+    revision: int = 0
+
+    def __str__(self) -> str:  # pragma: no cover - trivial
+        return (f"{self.run_id}/{self.source_slide_id}/"
+                f"{self.candidate_id}/r{self.revision}")
+
+
+class ArtifactEvidenceRef(BaseModel):
+    """Pointer to a real artifact with verified content hash (§3).
+
+    Named ``ArtifactEvidenceRef`` in the shared model module to avoid
+    collision with the Stage-1 ``EvidenceRef`` source-reference union;
+    ``gpn.acceptance`` re-exports it as ``EvidenceRef``.
+    """
+
+    model_config = StrictModel
+
+    artifact_id: str
+    relative_path: str
+    sha256: str = ""
+    byte_count: int = 0
+    subject_candidate_sha256: str | None = None
+    candidate_key: CandidateKey | None = None
+    snapshots: SnapshotSet = Field(default_factory=SnapshotSet)
+
+
+class SourceEvidenceRef(BaseModel):
+    """Provenance pointer into the immutable source (§6.1)."""
+
+    model_config = StrictModel
+
+    artifact_id: str
+    relative_path: str
+    sha256: str = ""
+    slide_part: str | None = None
+    object_id: str | None = None
+    span: str | None = None
+
+
+class TypedContentPayload(BaseModel):
+    """Typed content of a semantic unit (§6.1)."""
+
+    model_config = StrictModel
+
+    text: str = ""
+    literals: list[str] = Field(default_factory=list)
+    field_tokens: list[str] = Field(default_factory=list)
+    media_ref: str | None = None
+    data_ref: str | None = None
+    links: list[str] = Field(default_factory=list)
+
+
+class SemanticUnit(BaseModel):
+    model_config = StrictModel
+
+    id: str
+    kind: str
+    content: TypedContentPayload = Field(default_factory=TypedContentPayload)
+    source_refs: list[SourceEvidenceRef] = Field(default_factory=list)
+    preservation: Literal["required_exact", "required_semantic",
+                          "optional"] = "required_semantic"
+    parent_id: str | None = None
+    semantic_role: str = ""
+
+
+class SemanticRelation(BaseModel):
+    model_config = StrictModel
+
+    id: str
+    kind: str
+    from_unit_ids: list[str] = Field(default_factory=list)
+    to_unit_ids: list[str] = Field(default_factory=list)
+    directed: bool | None = None
+    conditions: list[str] = Field(default_factory=list)
+    source_refs: list[SourceEvidenceRef] = Field(default_factory=list)
+    preservation: Literal["required", "optional"] = "required"
+
+
+class SemanticSlide(BaseModel):
+    model_config = StrictModel
+
+    source_slide_id: str
+    title: str = ""
+    units: list[SemanticUnit] = Field(default_factory=list)
+    relations: list[SemanticRelation] = Field(default_factory=list)
+    hidden: bool = False
+
+
+class SemanticDeck(BaseModel):
+    """Immutable semantic projection of the source (§6.1)."""
+
+    model_config = StrictModel
+
+    schema_version: str = "semantic-deck/v1"
+    source_manifest_sha256: str = ""
+    slides: list[SemanticSlide] = Field(default_factory=list)
+    units: dict[str, SemanticUnit] = Field(default_factory=dict)
+    relations: dict[str, SemanticRelation] = Field(default_factory=dict)
+    evidence: list[SourceEvidenceRef] = Field(default_factory=list)
+    sha256: str = ""
+
+    @model_validator(mode="after")
+    def _check_hash(self) -> SemanticDeck:
+        import hashlib
+        canonical = json.dumps(
+            [s.model_dump(mode="json") for s in self.slides],
+            sort_keys=True, ensure_ascii=False)
+        if self.sha256 and self.sha256 != hashlib.sha256(
+                canonical.encode("utf-8")).hexdigest():
+            raise ValueError("semantic deck sha256 mismatch")
+        return self
+
+
+class CapabilityInventory(BaseModel):
+    """Actual capabilities of the built package/inputs (§4.1)."""
+
+    model_config = StrictModel
+
+    fonts_verified: bool = False
+    native_text: bool = True
+    native_tables: bool = True
+    native_charts: bool = False
+    native_diagrams: bool = True
+    images_restored: bool = False
+    links_preserved: bool = False
+    notes_preserved: bool = False
+    fields_preserved: bool = False
+    has_native_chart: bool = False
+    has_required_relations: bool = False
+
+
+class SelectionPolicy(BaseModel):
+    """Search/selection policy — technical, not a corporate norm (§8.4)."""
+
+    model_config = StrictModel
+
+    alternatives_required: int = 3
+    per_slide_variants: int = 3
+    policy_origin: str = "search-policy-default"
+
+
+class GateExpectation(BaseModel):
+    model_config = StrictModel
+
+    gate_id: str
+    required: bool = True
+    applies_to: list[str] = Field(default_factory=list)
+    expected_units: list[str] = Field(default_factory=list)
+    policy_origin: str = ""
+
+
+class GateStatus(StrEnum):
+    PASS = "pass"
+    FAIL = "fail"
+    UNKNOWN = "unknown"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class ApplicabilityProof(BaseModel):
+    """Proof that a rule/gate does not apply (§4.2.5)."""
+
+    model_config = StrictModel
+
+    rule_id: str | None = None
+    inventory_evidence: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+
+class TypedFinding(BaseModel):
+    model_config = StrictModel
+
+    code: str
+    severity: Literal["info", "warning", "error", "hard"] = "warning"
+    message: str
+    scope: str | None = None
+
+
+class GateEvidence(BaseModel):
+    """Typed gate evidence validated by validate_evidence (§4.1)."""
+
+    model_config = StrictModel
+
+    schema_version: str = "gate-evidence/v1"
+    gate_id: str
+    status: GateStatus = GateStatus.UNKNOWN
+    expected_units: list[str] = Field(default_factory=list)
+    checked_units: list[str] = Field(default_factory=list)
+    findings: list[TypedFinding] = Field(default_factory=list)
+    artifacts: list[ArtifactEvidenceRef] = Field(default_factory=list)
+    implementation_id: str = ""
+    snapshots: SnapshotSet = Field(default_factory=SnapshotSet)
+    subject_candidate_sha256: str = ""
+    not_applicable_evidence: ApplicabilityProof | None = None
+
+
+class ReviewedPage(BaseModel):
+    model_config = StrictModel
+
+    page: int
+    image: str
+    sha256: str = ""
+    byte_count: int = 0
+
+
+class VisualReview(BaseModel):
+    """Model visual review of exact rendered bytes (§10.2)."""
+
+    model_config = StrictModel
+
+    schema_version: str = "visual-review/v1"
+    task_id: str = ""
+    candidate_key: CandidateKey | None = None
+    candidate_sha256: str = ""
+    render_manifest_sha256: str = ""
+    pages: list[ReviewedPage] = Field(default_factory=list)
+    verdict: Literal["accept", "repair", "reject"] = "repair"
+    findings: list[TypedFinding] = Field(default_factory=list)
+    quality: dict[str, int] = Field(default_factory=dict)
+    actual_model: str = ""
+
+
+class SelectionEntry(BaseModel):
+    model_config = StrictModel
+
+    source_slide_id: str
+    candidate_key: CandidateKey
+    candidate_sha256: str = ""
+    candidate_path: str = ""
+    considered: list[str] = Field(default_factory=list)
+    rejected: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+
+class SelectionReport(BaseModel):
+    model_config = StrictModel
+
+    schema_version: str = "selection-report/v1"
+    selections: list[SelectionEntry] = Field(default_factory=list)
+    diversity_evidence: dict[str, object] = Field(default_factory=dict)
+
+
+class SlideExpectation(BaseModel):
+    model_config = StrictModel
+
+    source_slide_id: str
+    slide_part: str | None = None
+    hidden: bool = False
+    required_units: list[str] = Field(default_factory=list)
+    required_relations: list[str] = Field(default_factory=list)
+
+
+class FrameExpectation(BaseModel):
+    model_config = StrictModel
+
+    required: bool = True
+    verified: bool = False
+    source_refs: list[str] = Field(default_factory=list)
+
+
+class ProductExpectation(BaseModel):
+    """Expected-first product contract (§4.1)."""
+
+    model_config = StrictModel
+
+    schema_version: str = "product-expectation/v1"
+    input_spec: InputSpec
+    source_sha256: str = ""
+    slides: list[SlideExpectation] = Field(default_factory=list)
+    canvas: RectEMU = Field(default_factory=RectEMU)
+    required_gates: list[GateExpectation] = Field(default_factory=list)
+    frame: FrameExpectation = Field(default_factory=FrameExpectation)
+    selection_policy: SelectionPolicy = Field(default_factory=SelectionPolicy)
+    visual_design_required: bool = True
+    ui_proof_required: bool = False
+    snapshots: SnapshotSet = Field(default_factory=SnapshotSet)
+
+
+class SavedSlide(BaseModel):
+    model_config = StrictModel
+
+    sld_id: str
+    r_id: str
+    part: str
+    hidden: bool = False
+
+
+class SavedRenderPage(BaseModel):
+    model_config = StrictModel
+
+    page: int
+    image: str
+    sha256: str = ""
+
+
+class SavedPackageManifest(BaseModel):
+    """Candidate-bytes-derived package manifest (§4.1)."""
+
+    model_config = StrictModel
+
+    schema_version: str = "saved-package-manifest/v1"
+    candidate_path: str = ""
+    candidate_sha256: str = ""
+    canvas: RectEMU = Field(default_factory=RectEMU)
+    slides: list[SavedSlide] = Field(default_factory=list)
+    drawing_inventory: dict[str, int] = Field(default_factory=dict)
+    address_count: int = 0
+    package_parts: list[str] = Field(default_factory=list)
+    media_parts: list[str] = Field(default_factory=list)
+    notes_parts: list[str] = Field(default_factory=list)
+    render_manifest_sha256: str = ""
+    render_pages: list[SavedRenderPage] = Field(default_factory=list)
+
+
+class EvidenceValidation(BaseModel):
+    model_config = StrictModel
+
+    gate_id: str
+    valid: bool
+    errors: list[str] = Field(default_factory=list)
+
+
+class ProductAcceptance(BaseModel):
+    """Single derived status (§4.2.11-12)."""
+
+    model_config = StrictModel
+
+    acceptance_schema_version: str = "product-acceptance/v2"
+    accepted: bool = False
+    subject_candidate_sha256: str = ""
+    snapshots: SnapshotSet = Field(default_factory=SnapshotSet)
+    required_scope_count: int = 0
+    checked_scope_count: int = 0
+    findings: list[TypedFinding] = Field(default_factory=list)
+    evidence_index: dict[str, object] = Field(default_factory=dict)
+    error_codes: list[str] = Field(default_factory=list)
+    publication_eligible: bool = False
+
+
+class RunContext(BaseModel):
+    """Paths needed to resolve run-local artifacts."""
+
+    model_config = StrictModel
+
+    project_root: Path
+    run_dir: Path
+
+
+class ArtifactStore:
+    """Resolves EvidenceRef relative paths against project_root."""
+
+    def __init__(self, project_root: Path):
+        self.project_root = Path(project_root)
+
+    def resolve(self, ref: EvidenceRef) -> Path | None:
+        p = self.project_root / ref.relative_path
+        return p if p.is_file() else None
+
+    def verify(self, ref: EvidenceRef) -> tuple[bool, str]:
+        p = self.resolve(ref)
+        if p is None:
+            return False, ""
+        import hashlib
+        digest = hashlib.sha256(p.read_bytes()).hexdigest()
+        return digest == ref.sha256 and p.stat().st_size == ref.byte_count, digest
+
+
+# ---------------------------------------------------------------------------
+# Stage 7 §10.4-10.8: design cycle models
+# ---------------------------------------------------------------------------
+
+
+class SemanticGroup(BaseModel):
+    model_config = StrictModel
+
+    group_id: str
+    role: Literal["primary", "secondary", "supporting", "caveat"]
+    unit_ids: list[str] = Field(default_factory=list)
+    relation_ids: list[str] = Field(default_factory=list)
+
+
+class EncodingProposal(BaseModel):
+    model_config = StrictModel
+
+    encoding_id: str = ""
+    kind: Literal["process", "structure", "comparison", "table", "data",
+                  "typographic", "evidence", "unspecified"] = "unspecified"
+    expresses: list[str] = Field(default_factory=list)
+    source_unit_ids: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+
+
+class SlideDesignBrief(BaseModel):
+    """§10.4: communication job + required semantics for one slide."""
+
+    model_config = StrictModel
+
+    schema_version: str = "slide-design-brief/v1"
+    slide_id: str
+    communication_job: str
+    intended_takeaway: str
+    required_units: list[str] = Field(default_factory=list)
+    required_relations: list[str] = Field(default_factory=list)
+    semantic_groups: list[SemanticGroup] = Field(default_factory=list)
+    primary_group_id: str = ""
+    secondary_group_ids: list[str] = Field(default_factory=list)
+    supporting_evidence_ids: list[str] = Field(default_factory=list)
+    caveat_ids: list[str] = Field(default_factory=list)
+    visual_encoding_candidates: list[EncodingProposal] = Field(
+        default_factory=list)
+    forbidden_inferences: list[str] = Field(default_factory=list)
+    applicable_rule_refs: list[str] = Field(default_factory=list)
+    brief_sha256: str = ""
+
+
+class ConceptTopology(BaseModel):
+    model_config = StrictModel
+
+    topology: Literal["process_flow", "comparison", "hub_spoke",
+                      "stages", "matrix", "evidence_focus", "typographic",
+                      "unspecified"] = "unspecified"
+    group_adjacency: str = ""
+
+
+class DominanceSpec(BaseModel):
+    model_config = StrictModel
+
+    dominant_group_id: str = ""
+    dominance_kind: Literal["size", "position", "weight", "contrast"] = \
+        "size"
+    secondary_balance: str = ""
+
+
+class AlignmentSpec(BaseModel):
+    model_config = StrictModel
+
+    system: str = ""
+    anchors: list[str] = Field(default_factory=list)
+
+
+class WhitespaceSpec(BaseModel):
+    model_config = StrictModel
+
+    purpose: str = ""
+    regions: list[str] = Field(default_factory=list)
+
+
+class VisualMapping(BaseModel):
+    model_config = StrictModel
+
+    source_unit_ids: list[str] = Field(default_factory=list)
+    source_relation_ids: list[str] = Field(default_factory=list)
+    visual_element: str
+    representation: str = ""
+
+
+class SceneNodeSpec(BaseModel):
+    model_config = StrictModel
+
+    node_id: str
+    kind: Literal["text", "group", "connector", "table", "chart", "image",
+                  "container"]
+    semantic_role: str = ""
+    content_ref: str = ""
+
+
+class VisualConcept(BaseModel):
+    """§10.4: one designed visual explanation of the brief."""
+
+    model_config = StrictModel
+
+    schema_version: str = "visual-concept/v1"
+    concept_id: str
+    design_brief_sha256: str = ""
+    visual_argument: str = ""
+    group_topology: ConceptTopology = Field(default_factory=ConceptTopology)
+    main_visual_encoding: EncodingProposal = Field(
+        default_factory=EncodingProposal)
+    reading_path: list[str] = Field(default_factory=list)
+    dominance: DominanceSpec = Field(default_factory=DominanceSpec)
+    alignment_system: AlignmentSpec = Field(default_factory=AlignmentSpec)
+    whitespace_structure: WhitespaceSpec = Field(
+        default_factory=WhitespaceSpec)
+    source_to_visual_mapping: list[VisualMapping] = Field(
+        default_factory=list)
+    approved_example_refs: list[str] = Field(default_factory=list)
+    applicable_rule_refs: list[str] = Field(default_factory=list)
+    target_node_spec: list[SceneNodeSpec] = Field(default_factory=list)
+    risks_to_check: list[str] = Field(default_factory=list)
+    concept_sha256: str = ""
+
+
+class ConceptValidation(BaseModel):
+    model_config = StrictModel
+
+    concept_id: str
+    valid: bool
+    fidelity_findings: list[TypedFinding] = Field(default_factory=list)
+    invented_causality: list[str] = Field(default_factory=list)
+    invented_data: list[str] = Field(default_factory=list)
+
+
+class CompositionSignature(BaseModel):
+    """§10.1: semantic composition identity, not pixel distance."""
+
+    model_config = StrictModel
+
+    candidate_key: CandidateKey
+    semantic_group_topology: str = ""
+    major_region_adjacency: str = ""
+    reading_path: str = ""
+    dominant_group_id: str | None = None
+    area_distribution: dict[str, float] = Field(default_factory=dict)
+
+
+class DiversityReport(BaseModel):
+    model_config = StrictModel
+
+    schema_version: str = "diversity-report/v1"
+    slide_id: str = ""
+    signatures: list[CompositionSignature] = Field(default_factory=list)
+    distinct_topologies: int = 0
+    sufficient: bool = False
+    reason: str = ""
+
+
+class DesignDimensionReview(BaseModel):
+    model_config = StrictModel
+
+    dimension: str
+    result: Literal["sufficient", "insufficient", "not_applicable"]
+    evidence_regions: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+
+class DesignReview(BaseModel):
+    """§10.7: mandatory design review of current rendered bytes."""
+
+    model_config = StrictModel
+
+    schema_version: str = "design-review/v1"
+    task_id: str = ""
+    candidate_key: CandidateKey | None = None
+    candidate_sha256: str = ""
+    image_refs: list[str] = Field(default_factory=list)
+    design_brief_sha256: str = ""
+    concept_sha256: str = ""
+    verdict: Literal["accept", "repair", "reject"] = "repair"
+    dimensions: list[DesignDimensionReview] = Field(default_factory=list)
+    findings: list[TypedFinding] = Field(default_factory=list)
+    compared_approved_example_refs: list[str] = Field(default_factory=list)
+    actual_model: str = ""
+
+
+DESIGN_DIMENSION_FAMILIES: tuple[str, ...] = (
+    "semantic_readability_relations",
+    "hierarchy_dominance",
+    "grouping_alignment_rhythm",
+    "proportions_whitespace",
+    "encoding_data_fidelity",
+    "text_visual_evidence_balance",
+    "corporate_visual_language",
+    "deck_coherence_diversity",
+)
+
+FLAT_TEXT_DUMP = "flat_text_dump"
+
+
+# ---------------------------------------------------------------------------
+# Stage 7 §8.2: durable model-task contract
+# ---------------------------------------------------------------------------
+
+
+class ModelTaskKind(StrEnum):
+    SEMANTIC_ANALYSIS = "semantic_analysis"
+    NARRATIVE_PLAN = "narrative_plan"
+    DESIGN_BRIEF = "design_brief"
+    VISUAL_CONCEPT_GENERATION = "visual_concept_generation"
+    SCENE_GENERATION = "scene_generation"
+    SCENE_REPAIR = "scene_repair"
+    RULE_REVIEW = "rule_review"
+    VISUAL_REVIEW = "visual_review"
+    DESIGN_REVIEW = "design_review"
+    CANDIDATE_SELECTION = "candidate_selection"
+    DECK_REVIEW = "deck_review"
+
+
+class ModelTask(BaseModel):
+    """One harness task packet (§8.2)."""
+
+    model_config = StrictModel
+
+    schema_version: str = "model-task/v1"
+    request_id: str
+    kind: ModelTaskKind
+    candidate_key: CandidateKey | None = None
+    input_fingerprint: str = ""
+    response_schema_id: str = ""
+    packet: str = ""
+    required_images: list[str] = Field(default_factory=list)
+    expected_response_units: list[str] = Field(default_factory=list)
+    status: Literal["pending", "responded", "validated", "consumed",
+                    "rejected"] = "pending"
+
+
+class ModelTaskResponse(BaseModel):
+    model_config = StrictModel
+
+    schema_version: str = "model-task-response/v1"
+    request_id: str
+    input_fingerprint: str = ""
+    actual_model: str = ""
+    schema_version_id: str = ""
+    payload: dict[str, object] = Field(default_factory=dict)
+
+
+class RepairFinding(BaseModel):
+    model_config = StrictModel
+
+    finding_id: str = ""
+    subject_candidate_sha256: str = ""
+    candidate_key: CandidateKey | None = None
+    target_node_ids: list[str] = Field(default_factory=list)
+    source_unit_ids: list[str] = Field(default_factory=list)
+    defect: str = ""
+    severity: str = "warning"
+    constraints: list[str] = Field(default_factory=list)
+    image_regions: list[str] = Field(default_factory=list)
+    proposed_action: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Stage 7 §6.2: evidence-backed transformation decisions
+# ---------------------------------------------------------------------------
+
+
+class TransformationAuthorization(BaseModel):
+    model_config = StrictModel
+
+    authorized_by: str = ""
+    basis: Literal["harness_review", "rule", "policy",
+                   "unknown"] = "unknown"
+    ref: str = ""
+
+
+class TransformationDecision(BaseModel):
+    model_config = StrictModel
+
+    source_object_id: str = ""
+    source_unit_ids: list[str] = Field(default_factory=list)
+    action: Literal["preserve", "recompose", "replace", "omit"] = "preserve"
+    target_node_ids: list[str] = Field(default_factory=list)
+    target_relation_ids: list[str] = Field(default_factory=list)
+    authorization: TransformationAuthorization = Field(
+        default_factory=TransformationAuthorization)
+    semantic_evidence: list[str] = Field(default_factory=list)
+    reason: str = ""
+    source_snapshot: str = ""
+
+
+class TransformLedger(BaseModel):
+    model_config = StrictModel
+
+    schema_version: str = "transform-ledger/v1"
+    source_snapshot: str = ""
+    decisions: list[TransformationDecision] = Field(default_factory=list)
+
+    def decision_for(self, source_object_id: str):
+        for d in self.decisions:
+            if d.source_object_id == source_object_id:
+                return d
+        return None
+
+
+class OmitDecision(BaseModel):
+    model_config = StrictModel
+
+    allowed: bool = False
+    authorization_ref: str = ""
+    reason: str = ""
+    needs_review: bool = False

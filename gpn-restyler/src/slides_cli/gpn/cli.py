@@ -82,6 +82,80 @@ def build_gpn_parser() -> argparse.ArgumentParser:
     b.add_argument("--llm-provider", choices=("local", "local_server", "harness"),
                    default=None,
                    help="Override the configured model provider for this run")
+
+    lay = sub.add_parser(
+        "layout",
+        help="Measured build: composition -> Chromium -> resolution -> "
+             "native exporter -> saved-bytes checks (Stage 5 §12)",
+    )
+    lay.add_argument("--run-dir", type=Path, required=True)
+    lay.add_argument("--plans-dir", type=Path, required=True)
+    lay.add_argument("--workflow", choices=("presentation", "document"),
+                     default="presentation")
+    lay.add_argument("--overwrite", action="store_true")
+    lay.add_argument("--resume", action="store_true")
+    lay.add_argument("--no-measurement-cache", action="store_true")
+    lay.add_argument("--diagnostic", action="store_true")
+    lay.add_argument("--render", action="store_true",
+                     help="Run the native render probe after export")
+    lay.add_argument("--test-only-profile", action="store_true",
+                     help="Engine checks with the test font (never production)")
+    lay.add_argument("--layout-mode", choices=("preserve_structure", "recompose"),
+                     default=None)
+    lay.add_argument("--candidate-name", type=str, default=None)
+    lay.add_argument("--llm-provider", choices=("local", "local_server", "harness"),
+                     default=None,
+                     help="Override the configured model provider for this run")
+
+    rs = sub.add_parser(
+        "restyle",
+        help="Restyle a PPTX/PPT through the durable runner "
+             "(Stage 7 §11: start/resume loop, acceptance-gated publish)",
+    )
+    rs.add_argument("source", type=Path)
+    rs.add_argument("--output", type=Path, required=True)
+    rs.add_argument("--run-dir", type=Path, default=None)
+    rs.add_argument("--llm-provider", choices=("harness", "local_server"),
+                    default="harness")
+    rs.add_argument("--overwrite", action="store_true")
+    rs.add_argument("--response", type=Path, default=None, action="append",
+                    dest="responses",
+                    help="Harness response JSON to consume (repeatable); "
+                         "without it the command stops at awaiting_harness")
+
+    cr = sub.add_parser(
+        "create",
+        help="Create a deck from PDF/DOC/DOCX/MD/TXT/prompt (Stage 7 §9)",
+    )
+    cr.add_argument("source", type=Path, nargs="?", default=None)
+    cr.add_argument("--prompt", type=str, default=None)
+    cr.add_argument("--prompt-file", type=Path, default=None)
+    cr.add_argument("--output", type=Path, required=True)
+    cr.add_argument("--run-dir", type=Path, default=None)
+    cr.add_argument("--slides", type=int, default=None)
+    cr.add_argument("--llm-provider", choices=("harness", "local_server"),
+                    default="harness")
+    cr.add_argument("--overwrite", action="store_true")
+    cr.add_argument("--response", type=Path, default=None, action="append",
+                    dest="responses")
+
+    re = sub.add_parser(
+        "resume",
+        help="Resume a run: consume responses, advance, report status",
+    )
+    re.add_argument("run_dir", type=Path)
+    re.add_argument("--response", type=Path, default=None, action="append",
+                    dest="responses")
+
+    st = sub.add_parser("status", help="Show durable run status")
+    st.add_argument("run_dir", type=Path)
+
+    bu = sub.add_parser(
+        "bundle",
+        help="Build a review bundle with required-ref closure (Stage 7 §14)",
+    )
+    bu.add_argument("run_dir", type=Path)
+    bu.add_argument("--output", type=Path, required=True)
     return parser
 
 
@@ -132,20 +206,45 @@ def _run_dir_for(config: Any, explicit: Path | None, project_root: Path) -> Path
 def _production_assets_status(
     project_root: Path, config: Any,
 ) -> tuple[bool, list[dict[str, Any]]]:
-    """Check production assets (fonts/master) without claiming code readiness."""
+    """Check production assets (fonts/master) without claiming code readiness.
+
+    Stage 5 §4: installed system fonts count — the single configured
+    ``fonts_dir`` is only the first discovery root, never the whole story.
+    Exact required-face matching stays in ``profile`` (it owns the compiled
+    roles); doctor reports discovery signal + errors.
+    """
+    from .typography import discover_local_fonts
+
     blockers: list[dict[str, Any]] = []
-    fonts_dir_raw = getattr(getattr(config, "paths", None), "fonts_dir", "assets/fonts")
-    fonts_dir = project_root / str(fonts_dir_raw)
-    font_files = list(fonts_dir.glob("**/*")) if fonts_dir.is_dir() else []
-    font_binaries = [p for p in font_files if p.is_file()]
-    if not font_binaries:
+    try:
+        discovery = discover_local_fonts(
+            config, project_root=project_root)
+    except Exception as exc:  # noqa: BLE001 - discovery must not kill doctor
+        blockers.append({
+            "rule_id": "FONTS",
+            "code": "FONT_DISCOVERY_FAILED",
+            "severity": "error",
+            "details": f"font discovery failed: {exc}",
+        })
+        return False, blockers
+    if not discovery.discovered:
         blockers.append({
             "rule_id": "FONTS",
             "code": "GPN_FONTS_MISSING",
             "severity": "error",
-            "details": f"missing GPN font binaries in {fonts_dir}",
+            "details": "no font files discovered in configured dir or "
+                       "system font roots",
         })
-    return (len(blockers) == 0, blockers)
+    for err in discovery.errors:
+        blockers.append({
+            "rule_id": "FONTS",
+            "code": "FONT_DISCOVERY_WARNING",
+            "severity": "warning",
+            "details": err,
+        })
+    ready = bool(discovery.discovered) and not any(
+        b["severity"] == "error" for b in blockers)
+    return ready, blockers
 
 
 def cmd_doctor(args: argparse.Namespace, config: Any, project_root: Path) -> int:
@@ -382,5 +481,23 @@ def main(argv: list[str] | None = None) -> int:
     if args.gpn_command == "build":
         from .build_cli import cmd_build
         return cmd_build(args, config, project_root)
+    if args.gpn_command == "layout":
+        from .build_cli import cmd_layout
+        return cmd_layout(args, config, project_root)
+    if args.gpn_command == "restyle":
+        from .runner_cli import cmd_restyle
+        return cmd_restyle(args, config, project_root)
+    if args.gpn_command == "create":
+        from .runner_cli import cmd_create
+        return cmd_create(args, config, project_root)
+    if args.gpn_command == "resume":
+        from .runner_cli import cmd_resume
+        return cmd_resume(args, config, project_root)
+    if args.gpn_command == "status":
+        from .runner_cli import cmd_status
+        return cmd_status(args, config, project_root)
+    if args.gpn_command == "bundle":
+        from .runner_cli import cmd_bundle
+        return cmd_bundle(args, config, project_root)
     parser.print_help()
     return 2

@@ -96,6 +96,88 @@ def atomic_write_json(path: Path, value: BaseModel | dict[str, Any] | list[Any])
     return atomic_write_bytes(path, blob + b"\n")
 
 
+class ResolvedAsset(BaseModel):
+    """Verified image/media bytes with provenance (§5.1)."""
+
+    data: bytes
+    sha256: str
+    media_type: str
+    byte_count: int
+    source_kind: str  # 'asset_store' | 'source_opc'
+    provenance: str = ""
+
+
+def resolve_asset_bytes(
+    ref: AssetRef,
+    *,
+    stores: Any = (),
+    source_parts: dict[str, bytes] | None = None,
+    source_content_types: dict[str, str] | None = None,
+) -> ResolvedAsset:
+    """Reliable asset retrieval (§5.1): run stores first, then source OPC.
+
+    1. Try each explicitly known store (containment + hash verified by
+       ``AssetStore.resolve``). No filesystem-wide guessing.
+    2. Otherwise hash-match ``source_parts`` (owner package bytes loaded by
+       ``load_source_package``): the part whose SHA-256 equals the declared
+       digest is the asset, regardless of its OPC part name. A copy is
+       placed into the first writable store for reuse; the source stays
+       immutable.
+    3. Anything else is ``REQUIRED_ASSET_UNRESOLVED`` — the caller must
+       reject the candidate, never drop the atom.
+    """
+    from .errors import PreservationError
+
+    candidates: list[Any] = list(stores or [])
+    for store in candidates:
+        try:
+            data = store.read_bytes(ref)
+        except Exception:  # noqa: BLE001 - try next store / source OPC
+            continue
+        digest = sha256_bytes(data)
+        if digest != ref.sha256 or len(data) != ref.byte_count:
+            raise PreservationError(
+                "ASSET_HASH_MISMATCH",
+                f"stored asset does not match declared hash: {ref.relative_path}",
+            )
+        return ResolvedAsset(
+            data=data, sha256=digest, media_type=ref.media_type,
+            byte_count=len(data), source_kind="asset_store",
+            provenance=str(getattr(getattr(store, "root", ""), "__str__", lambda: "")()),
+        )
+    if source_parts:
+        for part_name, payload in source_parts.items():
+            if sha256_bytes(payload) != ref.sha256:
+                continue
+            if len(payload) != ref.byte_count:
+                raise PreservationError(
+                    "ASSET_SIZE_MISMATCH",
+                    f"source OPC bytes size {len(payload)} != declared "
+                    f"{ref.byte_count} for {ref.sha256[:12]}",
+                )
+            media_type = ref.media_type
+            if source_content_types and part_name in source_content_types:
+                media_type = source_content_types[part_name] or media_type
+            for store in candidates:
+                try:
+                    stored = store.put(payload, media_type)
+                    _ = stored
+                    break
+                except Exception:  # noqa: BLE001 - next store
+                    continue
+            return ResolvedAsset(
+                data=payload, sha256=ref.sha256, media_type=media_type,
+                byte_count=len(payload), source_kind="source_opc",
+                provenance=f"source_opc:{part_name}",
+            )
+    raise PreservationError(
+        "REQUIRED_ASSET_UNRESOLVED",
+        f"mandatory asset {ref.sha256[:16]} ({ref.media_type}, "
+        f"{ref.byte_count} bytes) retrievable from neither asset store "
+        "nor source OPC; candidate must be rejected",
+    )
+
+
 class AssetStore:
     """Immutable SHA-256-addressed asset store rooted at ``root`` (spec §9.3)."""
 

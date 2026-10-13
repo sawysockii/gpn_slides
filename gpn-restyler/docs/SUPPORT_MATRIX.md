@@ -59,3 +59,15 @@ native exporter/Stage 4 transplant, render QA/Stage 7, corporate font
 downloads. Missing GPN font binaries keep `production_assets_ready=false`
 (`needs_assets`); they never explain away code behavior (Unicode search,
 classifier, rollback are font-independent).
+
+## Stage 5 — measured layout (declared support, verified by pilots)
+
+| Capability | Scope | Evidence |
+|---|---|---|
+| Chromium text measurement (exact local faces) | text/table-cell/chart/graph labels, lists, fields, UTF-16 mapping | `stage5_test_evidence.json` (57 reqs), both pilots `measurement_verified_for_profile=production` |
+| Recompose layout | text/image/shape/connector/table kinds; hint-directed allocation, zone subdivision, overlap repair, bounded attempts, residual-overlap gate | NTC pilot c0 resolved; c1/c2 honest infeasible with proof |
+| Preserve layout | all kinds incl. chart/group/unknown; source boxes kept, overflow/overlap exported flagged | compound pilot 4/4 resolved |
+| Table grids end-to-end | resolved col/row dims → native grid → saved grid gate + per-cell remeasurement | compound pilot `grid_checked=1, grid_deviations=0` |
+| Chart exhibits | frame relocation + style-only restyle, workbook exact; automatic label placement = native-render-required unknown | compound pilot render page 3; `chart_workbook` hash recorded |
+| Native render probe | LibreOffice → PDF/PNG, pdffonts vs candidate-declared faces, text extraction, calibration fixture/profile | both pilots `native_render_verified_for_scope=candidate_scope`, `visual_review_status=reviewed` |
+| NOT supported here | chart/graph/group recompose resolvers (`needs_binding`); container-aware text color; furniture collisions; PowerPoint UI editing (`powerpoint_ui_edit_verified=false`); `strict_output_ready=false` | readiness `blockers_and_unknown` |

@@ -170,3 +170,248 @@ Stage 4: native exporter/transplant (tables/charts/notes/links) on top of the St
   reference deck; run order is import → profile → import (recorded in readiness).
 - Pre-existing uncommitted changes (`bullets.py`, `errors.py`, `template.py`)
   were left untouched.
+
+## Stage 5 measurement/layout (2026-10-10, appended; lines above kept as the historical record)
+
+- Full suite: **409 passed, exit 0**; `uv run ruff check` clean.
+- New modules: `gpn/composition.py` (intent→component tree, operator bindings,
+  intent-declared nest pairs, stale source-allowance pruning note),
+  `gpn/layout.py` (ENGINE `layout/1.2`; hint-directed recompose, zone
+  subdivision, overlap repair, expand_into_free, residual-overlap gate,
+  per-slide + global budgets, table grids via `primitives.layout_table`,
+  layout cache keyed with engine version), `gpn/measurement.py` (Node/Chromium
+  bridge, canonical hashes, UTF-16 mapping), `gpn/measured_build.py`
+  (`run_measured_build`, saved-geometry + grid gates, saved remeasurement,
+  canvas-aware geometry validation, LibreOffice render probe + calibration),
+  `gpn/primitives.py` (table/graph/chart-exhibit/image/annotation resolvers),
+  `tools/layout/src/measure.js` (protocol 1.0, exact FontFace bytes, no net).
+- Exporter fixes on the Stage 4 path: notes 1:1 `a:br` round-trip; decor
+  autoshapes/connectors with bound diagram_node atoms; corporate latin
+  typeface incl. `a:fld`; group xfrm (rot/flip) preservation; free-connector
+  lines; resolved table grids applied + verified; endpoint-less connectors
+  atomized as geometry (provenance).
+- Fonts: 10 GPN faces + Wingdings discovered system-wide; production bundle,
+  browser-verified and native-renderer-verified in both pilots
+  (`production_assets_ready=true`).
+- Pilots (`runs/stage5/2026-10-09-a/`): `pilot-ntc` (real NTC slide05,
+  recompose: c0 resolved/exported, c1/c2 honest infeasible; candidate
+  `82798350…`) and `pilot-compound` (synthetic 4-slide technical fixture incl.
+  hidden slide; preserve: 4/4 resolved; candidate `53d3b9b6…`). Both:
+  saved_geometry/content/parts/workbook verified, native PDF+pages rendered,
+  visual review `reviewed` with page hashes.
+- Readiness: `strict_output_ready=false`, `powerpoint_ui_edit_verified=false`;
+  open: container-aware text color, chart auto-placement (render-only),
+  word-level precision, furniture collisions, connector line styling,
+  group-child autoshape geometry, chart/graph/group recompose resolvers.
+
+## Stage 5 recovery (2026-10-11, appended; lines above kept as the historical record)
+
+- Previous pilot `runs/stage5/2026-10-09-a/pilot-ntc` reconciled to
+  `failed_partial`: only 1 of 8 slides exported; candidate `82798350…`
+  contains C01 (0C539F fill), C03 (effectRef outerShdw), C21/C22 (synthetic
+  bold), surface-foreground, layout "Контакты", and incomplete-scope defects.
+- Root causes fixed in code:
+  - `opc_adapter.py: blank_slide_layout` — evidence-based layout selection
+    (fewest placeholders, no contact penalty); previous hardcoded index=6
+    selected slideLayout7 "Контакты".
+  - `opc_adapter.py: strip_shape_effect_inheritance` — removes p:style
+    effectRef and writes explicit empty a:effectLst; theme outerShdw no
+    longer inherited.
+  - `native.py: _apply_decor_fill_line` — normative no-fill for decorative
+    autoshapes; palette check for connector lines.
+  - `native.py: _style_run` — sets font.bold=False, explicit RGB foreground,
+    exact face from role; source bold/italic no longer passes through.
+  - `native.py: emit_shape` — roundRect normalized to rect with
+    GEOMETRY_NORMALIZED issue.
+- Artifacts: `runs/stage5-recovery/2026-10-11-000709/` —
+  `status_reconciliation.json`, `rule_application_trace.json`,
+  `failure_reproduction.json`.
+- Tests: `test_stage4_exporter.py` + `test_stage3_native.py` 74 passed;
+  `ruff check` clean.
+- Full-deck export verification pending: new build without
+  `pilot_selection.json` required to confirm all 8 slides exported.
+
+## Stage 5 recovery verification (2026-10-11, appended; lines above kept)
+
+- Root-cause fixes verified end-to-end (recovery §2–§5):
+  - `export_pipeline.compare_export_preservation`: authorized
+    roundRect→rect decoration normalization accepted (was false `changed`).
+  - `rules._check_c03`: surviving `a:effectRef` fails (theme shadow
+    inheritance); explicit empty `a:effectLst` passes (normative stripped
+    state, was false positive).
+  - `rules.check_saved_authoring_rules` (new): C01/C03/C21_C22/
+    surface_foreground on reopened candidate bytes, values from snapshot.
+  - `_emit_resolved_slides` tail writes `saved_authoring_rule_report.json`;
+    hard fail downgrades `completed` → `needs_review` (operation vs quality
+    separated, §8).
+- New checker on bad candidate `82798350…`: hard_fail=true —
+  C01 8 / C03 8 / C21_C22 10 / foreground 22 violations (§9 proof).
+- Fixed control slides (same source, same single-c0 plan, fixed code):
+  - slide6 «Предложение по работе с ДО» → `slide6-fixed/candidate.pptx`
+    (`6eb68a5b…`): completed, preservation true, content_diff 0/0/0,
+    saved-authoring 4×pass; bad-vs-fixed bytes: layout7→layout5,
+    roundRect 3→0, 0C539F 6→0, effectRef 5→0, b=1 10→0, colorless 22→0.
+  - slide3 «ГГД» → `slide3-fixed/candidate.pptx` (`66e08767…`):
+    completed, preservation true, content_diff 0/0/0, 4×pass.
+- New tests `tests/gpn/test_stage5_recovery.py`: 8 passed (§9: bad/fixed
+  fixtures, effectRef-without-effectLst, empty-effectLst, fresh-shape
+  strip, late-writer override, Contacts rejection ×2).
+- Suites green: recovery(8) + stage4(46) + stage3-native(28) + rules;
+  `ruff check .` clean.
+- Honest pending: 6 slides without accepted scene plans (1,2,4,5,7,8);
+  full 8-slide candidate; visual review + native render with real GPN
+  fonts on Mac; `aggregate_product_acceptance` (§8) not yet a function.
+
+## Diagnostic geometry root cause + saved geometry gate (2026-10-11, appended; lines above kept)
+
+- Root cause (opencode prompt §1): `resolve_slides_from_intents` added
+  `_default_box(len(geometry))` per source object (`y=by+index*slot`,
+  slot 822960 EMU) after valid zone boxes; `emit_slide` consumed
+  `geometry[obj.id]` (synthetic row) instead of the zone box. Title
+  y=15636240 EMU (slide6), uniform full-width rows on slide3 — confirmed
+  by `gpn/geometry.py:trace_geometry_application` (first offence
+  `resolved.geometry_emu[source_id]`).
+- Fix: zone-bound objects take the zone box (single ref) or an explicit
+  vertical equal-share subdivision (multi-ref); no synthetic rows;
+  unbound objects get no fabricated coordinates (in-canvas fallback +
+  `GEOMETRY_BINDING_MISSING`/`UNBOUND_GEOMETRY_NEEDS_REPAIR`). New module
+  `gpn/geometry.py` (`zone_box_to_emu`, `upgrade_legacy_bindings`,
+  `trace_geometry_application`, `check_saved_geometry`,
+  `check_required_content_visibility`).
+- Gates: `_emit_resolved_slides` writes `saved_geometry_report.json`;
+  `diagnostic_geometry=true` → `DIAGNOSTIC_GEOMETRY_REJECTED` +
+  `needs_review` even on style pass; fully-outside content → hard fail;
+  silent `if not assets_ready: completed` override removed; `emit_slide`
+  emits typed `GEOMETRY_BINDING_MISSING`.
+- Proof on immutable old bytes: `6eb68a5b…` 20/20 outside (fail),
+  `66e08767…` 56/57 outside (fail); refix
+  `runs/stage5-recovery/2026-10-11-163026/slide6-refix/candidate.pptx`
+  (`aca68f9f…`) raw geometry pass (0 outside, 20 checked), title shares
+  `z-title` box, trace clean; export status honestly `needs_review`
+  (diagnostic path blocked from user acceptance per §8).
+- Tests: `tests/gpn/test_geometry_binding.py` 6 passed; affected batch
+  (geometry+recovery+stage4+stage3-native) 89 passed; `ruff check .` clean.
+- Pending: full 8-slide harness scene plans + measured build/render/
+  visual review/selection/acceptance; contextual surface policy
+  (`_style_run` default, blanket no-fill, effective C03); `create/resume`
+  CLI; document input mode.
+
+## Full-deck recovery increment (2026-10-11, appended; lines above kept)
+
+- Asset retrieval: `assets.resolve_asset_bytes` (store → source-OPC
+  hash-match → REQUIRED_ASSET_UNRESOLVED); `emit_image` + call-site fix.
+  Proof: slide6 `content_diff.ok=true`, `p:pic` restored (21 objs),
+  `9530a56c` logo bytes in candidate media.
+- Saved-geometry gate rewritten (actual canvas/order/hidden; all drawable
+  kinds; rot/flip polygons; group chains; partial-clip fail; connector
+  segments; unknown blocking). §2.2 four false-passes are regression
+  tests now failing as required.
+- Aggregation: visibility unknown blocks; expected-first diff;
+  monotonic verified flags; per-slide layout scoping (was 3236
+  cross-slide false pairs).
+- Binding: single `upgrade_legacy_bindings` algorithm; `_default_box`
+  deleted; full stable node IDs.
+- Runs `runs/stage5-recovery/2026-10-11-183855/`: `slide6-refix2/`
+  (image proof + render + visual review `repair`), `fulldeck/` (8
+  harness c0 plans, candidate `5fff0613…`, gates green except honest
+  diagnostic/visual blocks, 8-page render + review), `measured/`
+  (Chromium candidate `3b85a04d…`, diff ok, 124 remeasure overflows,
+  per-slide layout fail), `review_increment.zip` (69 files + manifest).
+- Tests: +7 geometry regressions green; affected suites 30 + 75 passed;
+  `ruff check .` clean; full suite running (`/tmp/gpn_full_pytest.log`).
+- Honest non-goals this increment: product_accepted=false (overlaps on
+  pp.2,3,4,7,8; white-on-white logo p.6); no c1/selection yet; no
+  create-mode; `strict_output_ready=false`, `powerpoint_ui_edit_verified=false`.
+
+## Stage 6 layout repair loop (2026-10-12; appended, prior lines intact)
+- Root cause traced (Chromium replay, no cache): Oct-11 `preserve_structure`
+  solver kept source boxes (249/327 incl. slide6 `01`); current recompose
+  path verified hint-driven (`solver==hint`, `01` one line, exact GPN face).
+  Traces: `runs/stage6-layout-repair/2026-10-12-140949/traces/`.
+- Engine: `layout` 1.3→1.7 (recompose-for-both-modes; decor-decor residual
+  skip; coverage-gap fail; reading-order children; preserve builders
+  restored); validator overlap slop aligned to solver (0.75pt);
+  reproducible zip timestamps; `ContentDiff.omitted_authorized`;
+  authorized asset replacement + authorized omits in comparator;
+  expected-first visibility wired (`required_visibility_report.json`);
+  central `acceptance.py` (exit 0/3).
+- Product: 10 c1/c2 scenes (harness, lineage kept); all candidates
+  resolved; content_diff ok (136 omitted_authorized); remeasure 0
+  overflows; layout_geometry pass; visibility pass; 8/8 PNG reviewed by
+  harness; c2 variants for slides 3+6 rendered/reviewed/rejected with
+  reasons; `product_acceptance.json` accepted=true (12/12); published
+  `NTC_business_AI_GPN_corporate.pptx` (sha `162b9684…`); native edit
+  roundtrip proven (UI scope stays unverified).
+- Skill: `skills/gpn-restyle/` (SKILL.md + 3 references, links checked).
+- Bundle: `runs/stage6-layout-repair/review_increment_next.zip`
+  (109 files + manifest, complete).
+- Tests: `tests/gpn/test_stage6_repair.py` (+8 green); full suite +
+  `ruff check .` clean (see development_history increment).
+- Known non-goals carried forward: ResolvedTextSpec/emit_scene/span
+  bindings/restyle_runner/create-smoke as code; frame unverified;
+  core.xml dcterms nondeterminism; PowerPoint UI editing.
+
+## Stage 7 addition (2026-10-12/13) — old lines above kept as history
+
+- Acceptance: typed expected-first evidence-aware `gpn/acceptance.py`
+  (build_product_expectation/collect_saved_manifest/validate_evidence/
+  aggregate_product_acceptance; 17 error codes; visual_design required
+  gate; FRAME_UNVERIFIED). Old dict-only API removed; stage6 acceptance
+  test migrated to typed contracts.
+- Semantics: `gpn/semantics.py` (immutable projection with own hash;
+  can_omit_source_object; relation preservation check). Emission path
+  consults ledger; arrow shapes never auto-decor. 9 NTC arrows assessed
+  individually as required relations (runs/stage7-acceptance/
+  arrow_relation_assessment.json).
+- Design: `gpn/design.py` (brief/concepts/fidelity/scene/review/compare/
+  diversity-by-topology) + user_feedback.json (162b9684 rejected,
+  flat_text_dump). Same bytes cannot be re-accepted.
+- Runner: `gpn/restyle_runner.py` (durable state, task queue, response
+  validation, budgets, invalidation, assembly check, guarded publish).
+  CLI: `slides gpn restyle/create/resume/status/bundle` (exit 4 =
+  awaiting_harness). Ingest: `gpn/document_ingest.py` (PDF via
+  pypdf==6.0.0, DOCX via python-docx==1.2.0, MD/TXT/prompt).
+- Bundle: `gpn/review_bundle.py` (required-role closure, self-inspect).
+  Roundtrip: `gpn/edit_roundtrip.py` (changed text+geometry after reopen,
+  media/workbook byte stability; UI stays unverified).
+- Verified via public CLI (awaiting_harness): NTC restyle, new mini PPTX
+  (72383b04), PDF create (2 blocks), DOCX create (4 blocks + table),
+  prompt create. New tests: stage7_{acceptance,design,semantics,runner,
+  cli_bundle,roundtrip} (64 tests green); ruff clean.
+- Open debts: full NTC rebuild through new runner (harness task
+  execution pending); resolve_frame_profile; rule-application coverage;
+  calibration pairing; ResolvedTextSpec/emit_scene/span-bindings;
+  skill-loader discovery (outside project, unverified).
+
+---
+
+## Этап 8 — факты поверх stage 7 (дополнение 2026-10-13; предыдущие строки не изменены)
+
+### Добавлено в код
+- `restyle_runner._materialize_semantic_deck()`: движок сам валидирует ответ модели
+  (`SemanticDeck`), пишет `inputs/semantic_deck.json` (собственный sha) и
+  `classification_and_transformation_ledger.json` (решение на каждый объект исходного
+  IR; unknown object / omit без причины / стрелка без `target_relation_ids` → findings).
+  Snapshot авторизации = sha256 байтов `source_ir.json`.
+- `advance_run`: `UNKNOWN_OR_CONSUMED_TASK` больше не порождает reissue (очередь не
+  размножается); reissue остаётся для устаревшего содержимого.
+- `design.generate_visual_concepts`: контракт ответа `{"concepts": [...]}`.
+- `document_ingest.source_object_inventory()`: пообъектная инвентаризация исходника в
+  пакете `semantic_analysis`.
+- `ResolvedSurfaceStyle`: `LayoutZone.surface_token / foreground_token / stroke_token`
+  → `planning_bridge` → `export_pipeline.emit_slide` → `native`:
+  `_apply_decor_fill_line` красит только объявленной палитровой заливкой,
+  `emit_text` красит текст на поверхности, `emit_free_connector` красит связь и
+  выставляет наконечники (`_set_connector_arrows`). Неизвестный токен →
+  `SURFACE_TOKEN_UNKNOWN`, не молчаливый цвет.
+- `layout`: группа с одинаковым боксом, у которой **каждая пара** объявлена в
+  `allowed_overlaps`, сохраняет со-локацию (`nest_cluster`) вместо вертикальной стопки.
+
+### Фактическое состояние NTC-прогона
+- Модель текущей сессии исполнила 41 задачу (semantic → briefs → concepts → scenes),
+  24 автора сцены по 8 слайдам.
+- Семантика: 174 обязательные единицы, 327 решений трансформации.
+- **Продукт не принят, файл не опубликован**: measured-layout возвращает
+  `infeasible` на всех 8 слайдах (`stage8_evidence.json`). Причина —
+  плотность: один нативный текстовый блок на исходный объект плюс шаг стопки 7.2 pt
+  не помещаются в верифицированный content band при корпоративных кеглях.

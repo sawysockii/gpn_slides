@@ -636,6 +636,60 @@ def test_internal_notes_hidden_order(tmp_path: Path):
     assert deck.slides[0].notes, "notes must survive import"
 
 
+def test_notes_break_only_paragraph_roundtrip(tmp_path: Path):
+    """Stage 5 §1.1 regression: copy_notes preserves paragraph count 1:1.
+
+    A notes paragraph containing only a soft break (canonical '\\n') must
+    round-trip as one break paragraph — a naive '\\n'.join would flatten it
+    into an extra empty paragraph and lose the atom.
+    """
+    from lxml import etree
+    from pptx.oxml.ns import qn
+
+    from slides_cli.gpn import native as _native
+
+    prs = fx.new_deck()
+    s = fx.blank_slide(prs)
+    ntf = s.notes_slide.notes_text_frame
+    ntf.clear()
+    # clear() keeps one empty paragraph in this python-pptx version: reuse it.
+    p0 = ntf.paragraphs[0]
+    etree.SubElement(p0._p, qn("a:br"))  # break-only paragraph
+    p1 = ntf.add_paragraph()
+    run = p1.add_run()
+    run.text = "0.2 - отступы между модулями"
+    ntf.add_paragraph()  # empty trailing paragraph
+    src = tmp_path / "src.pptx"
+    prs.save(str(src))
+
+    deck, ledger, _store = _import(src, tmp_path / "run")
+    source_notes = deck.slides[0].notes
+    assert ["".join(r.text for r in p.runs) for p in source_notes] == [
+        "\n", "0.2 - отступы между модулями", ""]
+    before = sorted(
+        a.canonical_value
+        for a in ledger.atoms if a.kind == "notes")
+
+    template = tmp_path / "template.pptx"
+    tprs = fx.new_deck()
+    fx.blank_slide(tprs)
+    tprs.save(str(template))
+    ctx = _native.create_output_deck(template, {}, [{"source_slide_id": "s0"}])
+    out_slide = ctx.presentation.slides[0]
+    report = _native.copy_notes(source_notes, out_slide, ctx,
+                                source_slide_id="s0")
+    assert report["ok"] is True
+    assert report["paragraphs"] == 3
+    out_path = tmp_path / "out.pptx"
+    adapter.save_presentation(ctx.presentation, out_path)
+
+    _out_deck, out_ledger, _out_store = _import(out_path, tmp_path / "run2")
+    after = sorted(
+        a.canonical_value
+        for a in out_ledger.atoms if a.kind == "notes")
+    assert after == before, f"notes atoms must round-trip 1:1: {before} vs {after}"
+
+
 def test_group_transform_corners():
     from slides_cli.gpn import native as _native
 
@@ -926,3 +980,157 @@ def test_package_graph_report_on_real_file(tmp_path: Path):
     assert report["ok"] is True
     assert report["duplicate_members"] == []
     assert report["dangling_targets"] == []
+
+
+# ---------------------------------------------------------------------------
+# Stage 5 §1.1 regression: decorative shapes keep native preset geometry
+# ---------------------------------------------------------------------------
+
+def test_decor_shapes_preserve_geometry_and_bindings(tmp_path: Path):
+    """Pure-decoration shapes keep real preset geometry (not empty textboxes).
+
+    line/rect/roundRect/ellipse shapes without text must round-trip with
+    the same geometry token, and their diagram_node atoms must be bound to
+    a geometry subaddress (an unbound atom is a silent preservation loss).
+    """
+    from pptx.enum.shapes import MSO_AUTO_SHAPE_TYPE, MSO_CONNECTOR_TYPE
+    from pptx.util import Emu
+
+    from slides_cli.gpn import native as _native
+
+    src = tmp_path / "src.pptx"
+    prs = fx.new_deck()
+    slide = fx.blank_slide(prs)
+    slide.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.RECTANGLE,
+                           Emu(914400), Emu(914400), Emu(1828800), Emu(914400))
+    slide.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE,
+                           Emu(914400), Emu(2743200), Emu(1828800), Emu(914400))
+    slide.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.OVAL,
+                           Emu(914400), Emu(4572000), Emu(1828800), Emu(914400))
+    slide.shapes.add_connector(MSO_CONNECTOR_TYPE.STRAIGHT,
+                               Emu(914400), Emu(6400800),
+                               Emu(7315200), Emu(914400))
+    prs.save(str(src))
+    deck, _ledger, _store = _import(src, tmp_path / "run")
+
+    def _has_text(o) -> bool:
+        t = getattr(getattr(o, "payload", None), "text", None)
+        for p in list(getattr(t, "paragraphs", []) or []):
+            for r in list(getattr(p, "runs", []) or []):
+                if (getattr(r, "text", "") or "") or getattr(
+                        getattr(r, "field", None), "cached_text", ""):
+                    return True
+        return False
+
+    decor = [o for s in deck.slides for o in s.objects
+             if (o.kind == "shape" and not _has_text(o))
+             or o.kind == "connector"]
+    assert len(decor) >= 4, "fixture must import decor shapes"
+    expected = {}
+    for o in decor:
+        if o.kind == "connector":
+            expected[o.id] = "line"
+        else:
+            expected[o.id] = getattr(o.payload, "geometry_token", "")
+    assert any(expected.values()), "imported decor must carry geometry tokens"
+
+    template = tmp_path / "template.pptx"
+    tprs = fx.new_deck()
+    fx.blank_slide(tprs)
+    tprs.save(str(template))
+    rules = _real_rules()
+    ctx = _native.create_output_deck(template, {}, [{"source_slide_id": "x"}])
+    out_slide = ctx.presentation.slides[0]
+    box = {"x": 914400, "y": 914400, "w": 3657600, "h": 914400}
+    for o in decor:
+        addr = _native.emit_shape(o.payload, {"box_emu": dict(box),
+                                              "role": "body"},
+                                  out_slide, ctx, rules=rules,
+                                  source_object_id=o.id)
+        assert addr.shape_id > 0
+        box = {"x": box["x"], "y": box["y"] + 1371600,
+               "w": box["w"], "h": box["h"]}
+    subs = {b.source_atom_id: b.target_subaddress for b in ctx.output_map}
+    for o in decor:
+        assert subs.get(f"{o.id}#shape") == "geometry", (
+            f"diagram_node atom of {o.id} must be bound to geometry")
+    out = tmp_path / "out.pptx"
+    adapter.save_presentation(ctx.presentation, out)
+    deck2, _, _ = _import(out, tmp_path / "run2")
+    actual = {}
+    for s in deck2.slides:
+        for o in s.objects:
+            if o.kind == "connector":
+                actual[o.id] = "line"
+            elif o.kind == "shape" and not _has_text(o):
+                actual[o.id] = getattr(o.payload, "geometry_token", "")
+    assert len(actual) == len(decor), (
+        f"decor count must survive: {len(actual)} != {len(decor)}")
+    for got in actual.values():
+        assert got in set(expected.values()), (
+            f"unexpected geometry token {got!r}")
+
+
+def test_group_xfrm_preserved_on_emit(tmp_path: Path):
+    """Stage 5 §9.3: group rotation/nonuniform scale/flips survive native
+    emission (children stay group-local; the xfrm carries the transform),
+    and the reopened group reports the same transform fields."""
+    from slides_cli.gpn import native as _native
+
+    src = tmp_path / "src.pptx"
+    prs = fx.new_deck()
+    slide = fx.blank_slide(prs)
+    fx.add_group_with_nonuniform_scale(slide)
+    prs.save(str(src))
+    deck, _ledger, _store = _import(src, tmp_path / "run")
+    groups = [o for s in deck.slides for o in s.objects if o.kind == "group"]
+    assert groups, "fixture must import a group"
+    src_payload = groups[0].payload
+    assert getattr(src_payload, "rot_deg", 0.0) != 0.0, (
+        "fixture group must carry rotation")
+    assert getattr(src_payload, "flip_h", False) is True
+
+    template = tmp_path / "template.pptx"
+    tprs = fx.new_deck()
+    fx.blank_slide(tprs)
+    tprs.save(str(template))
+    rules = _real_rules()
+    ctx = _native.create_output_deck(template, {}, [{"source_slide_id": "x"}])
+    out_slide = ctx.presentation.slides[0]
+    box = {"x": 914400, "y": 914400, "w": 5486400, "h": 2743200}
+    addr = _native.emit_group(groups[0].payload, {"box_emu": dict(box)},
+                              out_slide, ctx, rules=rules,
+                              source_object_id=groups[0].id)
+    assert addr.shape_id > 0
+    out = tmp_path / "out.pptx"
+    adapter.save_presentation(ctx.presentation, out)
+    deck2, _, _ = _import(out, tmp_path / "run2")
+    groups2 = [o for s in deck2.slides for o in s.objects
+               if o.kind == "group"]
+    assert len(groups2) == 1, "exactly one group must round-trip"
+    back = groups2[0].payload
+    assert abs(getattr(back, "rot_deg", 0.0)
+               - getattr(src_payload, "rot_deg", 0.0)) < 0.01
+    assert getattr(back, "flip_h", False) == getattr(
+        src_payload, "flip_h", False)
+    assert getattr(back, "flip_v", False) == getattr(
+        src_payload, "flip_v", False)
+    # children survive with text (group children emit as textboxes;
+    # autoshape geometry inside groups is a recorded Stage 4 limit)
+    texts = []
+
+    def _collect(payload):
+        inner = getattr(payload, "text", None)
+        paras = getattr(payload, "paragraphs", None)
+        if paras is None and inner is not None:
+            paras = getattr(inner, "paragraphs", []) or []
+        for p in list(paras or []):
+            texts.append("".join(getattr(r, "text", "")
+                                 for r in p.runs))
+
+    for child in list(getattr(back, "children", []) or []):
+        _collect(getattr(child, "payload", None))
+        for grand in list(getattr(
+                getattr(child, "payload", None), "children", []) or []):
+            _collect(getattr(grand, "payload", None))
+    assert "A" in texts and "B" in texts

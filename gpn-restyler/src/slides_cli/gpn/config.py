@@ -72,7 +72,7 @@ class LayoutConfig(BaseModel):
 class PolicyConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    mode: Literal["preserve_structure", "recompose"] = "preserve_structure"
+    mode: Literal["preserve_structure", "recompose"] = "recompose"
     allow_split: bool = False
     allow_cross_slide_move: bool = False
     allow_text_rewrite: bool = False

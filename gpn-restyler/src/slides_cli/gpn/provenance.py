@@ -155,17 +155,34 @@ def _atomize_object(obj: ObjectIR, atoms: list[LedgerAtom], order: list[str]) ->
                 )
                 order.append(para.id)
         else:
-            atoms.append(
-                LedgerAtom(
-                    id=f"{obj.id}#edge",
-                    source_ref=obj.source_ref,
-                    kind="diagram_edge",
-                    canonical_value=f"{payload.from_object_id}->{payload.to_object_id}",
-                    required=True,
-                    permitted_transforms=["style_only"],
+            if payload.from_object_id is None and payload.to_object_id is None:
+                # Free-floating line: no relation to preserve, but visible
+                # geometry. A diagram_node atom (like decor) keeps it bound
+                # and verified; an edge atom with None endpoints could
+                # never be bound or checked.
+                atoms.append(
+                    LedgerAtom(
+                        id=f"{obj.id}#shape",
+                        source_ref=obj.source_ref,
+                        kind="diagram_node",
+                        canonical_value="line",
+                        required=True,
+                        permitted_transforms=["style_only", "relocate"],
+                    )
                 )
-            )
-            order.append(f"{obj.id}#edge")
+                order.append(f"{obj.id}#shape")
+            else:
+                atoms.append(
+                    LedgerAtom(
+                        id=f"{obj.id}#edge",
+                        source_ref=obj.source_ref,
+                        kind="diagram_edge",
+                        canonical_value=f"{payload.from_object_id}->{payload.to_object_id}",
+                        required=True,
+                        permitted_transforms=["style_only"],
+                    )
+                )
+                order.append(f"{obj.id}#edge")
         return
 
     if obj.kind == "image":

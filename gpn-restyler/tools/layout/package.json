@@ -1,0 +1,1 @@
+{"description":"GPN Restyler Stage 5: single local Chromium measurement tool (controlled DOM text geometry, exact local fonts, no network).","license":"UNLICENSED","name":"@gpn-restyler/layout-measure","private":true,"scripts":{"measure":"node src/measure.js"},"type":"module","version":"0.1.0","dependencies":{"playwright":"1.64.0"}}

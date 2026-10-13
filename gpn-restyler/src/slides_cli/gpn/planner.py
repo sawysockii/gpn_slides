@@ -54,6 +54,14 @@ class LayoutZone(BaseModel):
     h_pct: float = Field(gt=0, le=100)
     role: str = ""
     content_refs: list[str] = Field(default_factory=list)
+    # §5.3 ResolvedSurfaceStyle: a scene may declare that its container is
+    # a *surface* (panel/card/rail) and what text foreground stands on it.
+    # Values are palette *token names* from the loaded ontology JSON —
+    # never literal RGB — so a JSON change moves the rendered surface
+    # without touching Python.
+    surface_token: str = ""
+    foreground_token: str = ""
+    stroke_token: str = ""
 
 
 class LayoutRelation(BaseModel):
@@ -80,6 +88,10 @@ class LayoutIntent(BaseModel):
     relations: list[LayoutRelation] = Field(default_factory=list)
     operators: list[str] = Field(default_factory=list)
     reference_ids: list[str] = Field(default_factory=list)
+    # Stage 5: explicit nest pairs resolved to share a box (card contains
+    # its texts). Exact object-id pairs, intent origin; the geometry
+    # validator honors only these — never a blanket allow-overlap.
+    allowed_overlaps: list[list[str]] = Field(default_factory=list)
     novel_recipe: str = ""
     uncertainties: list[str] = Field(default_factory=list)
     rationale: str = ""

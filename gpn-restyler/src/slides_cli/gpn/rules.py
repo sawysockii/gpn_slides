@@ -271,14 +271,36 @@ def _check_c03(rule_id: str, context: RuleEvaluationContext) -> RuleCoverage:
             reason="no raw package XML available",
             blocking=True,
         )
-    # Check for forbidden effects in raw XML
+    # Check for forbidden effects in raw XML.
+    # Recovery §5 (resolve_effective_shape_effects): a shape without a
+    # direct a:effectLst is NOT effect-free. python-pptx inserts p:style
+    # with a:effectRef idx=1/2 pointing at theme effectStyleLst entries
+    # that contain a:outerShdw. Any surviving effectRef therefore inherits
+    # a prohibited shadow and must fail — the emitter is required to strip
+    # it (opc_adapter.strip_shape_effect_inheritance) and write an explicit
+    # empty a:effectLst.
+    import re as _re
+
     xml_str = str(context.raw_package_xml)
+    # An explicit EMPTY effectLst is the normative stripped state written
+    # by strip_shape_effect_inheritance — it proves no effect. Only a
+    # non-empty effectLst (with effect children) is forbidden.
+    scrubbed = _re.sub(r"<a:effectLst\s*/>", "", xml_str)
+    scrubbed = _re.sub(r"<a:effectLst\s*>(\s*)</a:effectLst>", "", scrubbed)
     forbidden = ["a:effectLst", "a:gradFill", "a:bevel", "a:outerShdw"]
-    found = [f for f in forbidden if f in xml_str]
+    found = [f for f in forbidden if f in scrubbed]
     if found:
         return RuleCoverage(
             rule_id=rule_id, check_kind="deterministic", result="fail",
             reason=f"forbidden effects found: {found}",
+            blocking=True,
+        )
+    if "a:effectRef" in xml_str or "effectRef" in xml_str:
+        return RuleCoverage(
+            rule_id=rule_id, check_kind="deterministic", result="fail",
+            reason="inherited effectRef survives: theme effectStyleLst "
+                   "entries contain outerShdw; strip_shape_effect_inheritance "
+                   "required (no direct effectLst is not proof of no effect)",
             blocking=True,
         )
     return RuleCoverage(
@@ -890,6 +912,151 @@ def _check_r04(rule_id: str, context: RuleEvaluationContext) -> RuleCoverage:
     )
 
 
+def check_saved_authoring_rules(
+    package_path: Any,
+    compiled_rules: Any,
+) -> dict[str, Any]:
+    """Check C01/C03/C21/C22 on reopened actual bytes (recovery §5).
+
+    Reads the saved candidate PPTX via zip/XML — never the expected IR,
+    never a stale cache. Every normative value comes from the loaded
+    ontology snapshot (palette, font policy); no literal allowlist lives
+    here.
+
+    Checks (authoring scope: shape fills/lines, text runs; photo pixels
+    are out of palette scope by checker design):
+    - C01: every srgbClr in authoring fills/runs is in the snapshot
+      palette (direct values + conditional rgb).
+    - C03: no roundRect preset geometry; no surviving a:effectRef
+      (theme inheritance); no non-empty direct a:effectLst.
+    - C21/C22: no b="1" except the documented exception face.
+    - surface_foreground: every text run carries an explicit solidFill
+      (inherited tx1 on an unknown surface is unreadable — the bad
+      candidate failure mode).
+    """
+    import zipfile
+
+    from lxml import etree
+
+    report: dict[str, Any] = {
+        "candidate": str(package_path),
+        "rules": {},
+        "hard_fail": False,
+    }
+    palette: set[str] = set()
+    if compiled_rules is not None:
+        colors = dict(getattr(compiled_rules, "colors", {}) or {})
+        palette = {str(v).strip().lstrip("#").upper()
+                   for v in colors.values()}
+        conditional = getattr(compiled_rules, "conditional_colors", {}) or {}
+        if isinstance(conditional, dict):
+            for cond in conditional.values():
+                rgb = getattr(cond, "rgb", "")
+                if rgb:
+                    palette.add(str(rgb).strip().lstrip("#").upper())
+    exception_faces: set[str] = set()
+    if compiled_rules is not None:
+        for rule in list(getattr(compiled_rules, "font_policy_rules",
+                                 []) or []):
+            if getattr(rule, "exception", False) and getattr(
+                    rule, "typeface", ""):
+                exception_faces.add(str(rule.typeface))
+
+    c01_bad: list[str] = []
+    c03_bad: list[str] = []
+    bold_bad: list[str] = []
+    fg_bad: list[str] = []
+    slides_checked = 0
+    try:
+        with zipfile.ZipFile(package_path) as archive:
+            names = [n for n in archive.namelist()
+                     if n.startswith("ppt/slides/slide") and n.endswith(".xml")]
+            for name in sorted(names):
+                data = archive.read(name)
+                try:
+                    root = etree.fromstring(data)
+                except Exception:  # noqa: BLE001 - corrupt part reported
+                    c03_bad.append(f"{name}: unparseable slide XML")
+                    continue
+                slides_checked += 1
+                ns = {"a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+                      "p": "http://schemas.openxmlformats.org/presentationml/2006/main"}
+                for sp in root.findall(".//p:sp", ns) + root.findall(
+                        ".//p:cxnSp", ns):
+                    geom = sp.find(".//a:prstGeom", ns)
+                    if geom is not None and geom.get("prst") == "roundRect":
+                        c03_bad.append(
+                            f"{name}: roundRect decorative geometry")
+                    for ref in sp.findall(".//a:effectRef", ns):
+                        c03_bad.append(
+                            f"{name}: surviving effectRef idx="
+                            f"{ref.get('idx')} (theme shadow inheritance)")
+                    for lst in sp.findall(".//a:effectLst", ns):
+                        if len(list(lst)) > 0:
+                            c03_bad.append(
+                                f"{name}: non-empty direct effectLst")
+                    for clr in sp.findall(
+                            ".//a:solidFill/a:srgbClr", ns):
+                        val = str(clr.get("val", "")).upper()
+                        # Shape fills live inside p:spPr (authoring scope);
+                        # fills inside a:rPr are run foregrounds below.
+                        parent = clr.getparent()
+                        grand = parent.getparent() if parent is not None else None
+                        if grand is not None and grand.tag.endswith("}rPr"):
+                            continue
+                        if val and val not in palette:
+                            c01_bad.append(
+                                f"{name}: authoring fill {val} not in palette")
+                for rpr in root.findall(".//a:rPr", ns):
+                    latin = rpr.find("a:latin", ns)
+                    face = latin.get("typeface", "") if latin is not None else ""
+                    if rpr.get("b") == "1" and face not in exception_faces:
+                        bold_bad.append(
+                            f"{name}: b=1 on {face or 'unknown face'}")
+                    fill = rpr.find("a:solidFill", ns)
+                    if fill is None:
+                        fg_bad.append(
+                            f"{name}: run without explicit foreground "
+                            f"(face={face or '?'})")
+                    else:
+                        clr = fill.find("a:srgbClr", ns)
+                        if clr is not None:
+                            val = str(clr.get("val", "")).upper()
+                            if val and val not in palette:
+                                c01_bad.append(
+                                    f"{name}: run color {val} not in palette")
+    except FileNotFoundError:
+        report["error"] = f"candidate not found: {package_path}"
+        report["hard_fail"] = True
+        return report
+    except Exception as exc:  # noqa: BLE001 - honest failure, not pass
+        report["error"] = f"saved-bytes read failed: {exc}"
+        report["hard_fail"] = True
+        return report
+
+    def _entry(passed: bool, violations: list[str],
+               detail: str) -> dict[str, Any]:
+        return {"result": "pass" if passed else "fail",
+                "violations": violations[:10],
+                "violation_count": len(violations), "detail": detail}
+
+    report["slides_checked"] = slides_checked
+    report["rules"]["C01"] = _entry(
+        not c01_bad, c01_bad,
+        "all saved authoring srgbClr in snapshot palette")
+    report["rules"]["C03"] = _entry(
+        not c03_bad, c03_bad,
+        "no roundRect/effectRef/non-empty effectLst in saved bytes")
+    report["rules"]["C21_C22"] = _entry(
+        not bold_bad, bold_bad,
+        "no b=1 except documented exception face")
+    report["rules"]["surface_foreground"] = _entry(
+        not fg_bad, fg_bad,
+        "every run carries explicit foreground")
+    report["hard_fail"] = bool(c01_bad or c03_bad or bold_bad or fg_bad)
+    return report
+
+
 _CHECKER_REGISTRY: dict[str, Callable[[str, RuleEvaluationContext], RuleCoverage]] = {
     "check_c01": _check_c01,
     "check_c02": _check_c02,
@@ -918,3 +1085,182 @@ _CHECKER_REGISTRY: dict[str, Callable[[str, RuleEvaluationContext], RuleCoverage
     "check_r03": _check_r03,
     "check_r04": _check_r04,
 }
+
+
+# ---------------------------------------------------------------------------
+# §5.1: rule application coverage on saved bytes
+# ---------------------------------------------------------------------------
+
+# Rules whose scope is native charts only: without such objects in the
+# saved inventory they are not_applicable (with inventory proof), never a
+# silent pass and never an artificial blocker. Measurement/status/list
+# rules (C06/C08/C09/C12/C15/C17/C18) apply to metric text and layout too
+# and go through deterministic checkers or hybrid harness review.
+_CHART_ONLY_RULES: tuple[str, ...] = ("C07",)
+_TABLE_ONLY_RULES: tuple[str, ...] = ()
+
+
+def _saved_inventory(drawing_inventory: dict[str, int]) -> dict[str, bool]:
+    return {
+        "has_chart": bool(drawing_inventory.get("graphicFrame", 0)),
+        "has_table": bool(drawing_inventory.get("graphicFrame", 0)),
+        "has_image": bool(drawing_inventory.get("image", 0)),
+        "has_connector": bool(drawing_inventory.get("connector", 0)),
+    }
+
+
+def build_rule_applications(
+    compiled: Any,
+    semantic: Any,
+    saved_inventory: dict[str, int],
+) -> list[dict[str, Any]]:
+    """One application per registry rule with applicability evidence (§5.1).
+
+    Applicability is decided from the actual saved inventory + semantic
+    projection, never from "reports we found". Unknown new norms get
+    needs_binding, never a silent pass.
+    """
+    inv = _saved_inventory(saved_inventory or {})
+    registry = getattr(compiled, "rule_registry", None)
+    specs = getattr(registry, "specs", {}) or {}
+    bindings = getattr(registry, "bindings", {}) or {}
+    applications: list[dict[str, Any]] = []
+    for rule_id in sorted(specs):
+        binding = bindings.get(rule_id)
+        status = getattr(binding, "implementation_status", "deferred")
+        applicable = True
+        na_reason = ""
+        if rule_id in _CHART_ONLY_RULES and not inv["has_chart"]:
+            applicable = False
+            na_reason = ("chart-only rule; saved inventory has no "
+                         "native chart graphicFrames")
+        elif rule_id in _TABLE_ONLY_RULES and not inv["has_table"]:
+            applicable = False
+            na_reason = ("table-only rule; saved inventory has no "
+                         "native table graphicFrames")
+        applications.append({
+            "rule_id": rule_id,
+            "severity": getattr(specs[rule_id], "severity", "hard"),
+            "condition": getattr(specs[rule_id], "condition", ""),
+            "implementation_status": status,
+            "applicable": applicable,
+            "not_applicable_reason": na_reason,
+            "inventory_evidence": [
+                f"drawing_inventory={dict(saved_inventory or {})}"],
+        })
+    return applications
+
+
+def evaluate_saved_rules(
+    applications: list[dict[str, Any]],
+    *,
+    candidate_path: Any,
+    candidate_after_ir: Any,
+    compiled: Any,
+    candidate_sha256: str = "",
+    model_evidence: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Evaluate rule applications on reopened saved bytes (§5.1).
+
+    Deterministic checkers run on the reimported candidate IR; C01/C03/
+    C21/C22 additionally run on raw saved bytes via
+    check_saved_authoring_rules. Deferred/hybrid scopes are resolved by
+    typed harness rule-review evidence (honest hybrid checker); without
+    it they stay honest unknown (blocking for hard rules). Inapplicable
+    rules carry inventory proof. Normative values always come from the
+    compiled snapshot.
+    """
+    import hashlib as _hashlib
+
+    model_evidence = model_evidence or {}
+    context = RuleEvaluationContext(
+        subject_kind="saved", source_ir=candidate_after_ir,
+        compiled_rules=compiled)
+    saved_bytes = check_saved_authoring_rules(candidate_path, compiled)
+    saved_rules = saved_bytes.get("rules", {}) if isinstance(
+        saved_bytes, dict) else {}
+
+    evaluated: list[dict[str, Any]] = []
+    for app in applications:
+        rid = app["rule_id"]
+        if not app["applicable"]:
+            evaluated.append({**app, "result": "not_applicable",
+                              "reason": app["not_applicable_reason"],
+                              "blocking": False})
+            continue
+        if app["implementation_status"] == "needs_binding":
+            evaluated.append({**app, "result": "unknown",
+                              "reason": "unknown norm: needs_binding",
+                              "blocking": app["severity"] == "hard"})
+            continue
+        mev = model_evidence.get(rid)
+        if mev is not None and app["applicable"]:
+            verdict = str(mev.get("verdict", ""))
+            if verdict == "pass":
+                evaluated.append({
+                    **app, "result": "pass", "check_kind": "hybrid",
+                    "reason": f"harness rule review: {mev.get('proof', '')}",
+                    "blocking": False,
+                    "checked_scopes": [mev.get("subscope", "rule")],
+                    "evidence_refs": [mev.get("task_id", "rule_review")]})
+                continue
+            if verdict == "fail":
+                evaluated.append({
+                    **app, "result": "fail", "check_kind": "hybrid",
+                    "reason": f"harness rule review: {mev.get('proof', '')}",
+                    "blocking": True,
+                    "checked_scopes": [mev.get("subscope", "rule")],
+                    "evidence_refs": [mev.get("task_id", "rule_review")]})
+                continue
+        coverage = evaluate_rule(rid, context)
+        if coverage.result == "unknown" and mev is not None and \
+                str(mev.get("verdict", "")) in ("pass", "fail"):
+            verdict = str(mev["verdict"])
+            coverage = RuleCoverage(
+                rule_id=rid, check_kind="hybrid",
+                result=verdict,  # type: ignore[arg-type]
+                reason=f"harness rule review: {mev.get('proof', '')}",
+                blocking=verdict == "fail",
+                checked_scopes=[str(mev.get("subscope", "rule"))],
+                evidence_refs=[str(mev.get("task_id", "rule_review"))])
+        entry: dict[str, Any] = {
+            **app, "result": coverage.result, "reason": coverage.reason,
+            "check_kind": coverage.check_kind,
+            "blocking": coverage.blocking,
+            "checked_scopes": list(coverage.checked_scopes),
+            "evidence_refs": list(coverage.evidence_refs),
+        }
+        # Saved-bytes authoring checks override/confirm C01/C03/C21_C22.
+        saved = saved_rules.get(rid) or saved_rules.get(
+            rid.replace("C21_C22", "C21")) or {}
+        if isinstance(saved, dict) and saved.get("status"):
+            entry["saved_bytes_status"] = saved["status"]
+            if saved["status"] == "fail":
+                entry["result"] = "fail"
+                entry["blocking"] = True
+                entry["reason"] = (saved.get("reason", "") or
+                                   entry["reason"])
+        evaluated.append(entry)
+
+    fails = [e["rule_id"] for e in evaluated if e["result"] == "fail"]
+    blocking_unknowns = [e["rule_id"] for e in evaluated
+                         if e["result"] == "unknown" and e["blocking"]]
+    na = [e["rule_id"] for e in evaluated
+          if e["result"] == "not_applicable"]
+    checked = [e["rule_id"] for e in evaluated
+               if e["result"] in ("pass", "not_applicable")]
+    cond_fp = _hashlib.sha256(repr(sorted(
+        (a["rule_id"], a["condition"]) for a in applications)
+    ).encode()).hexdigest()
+    return {
+        "schema": "ontology-rule-coverage/v1",
+        "candidate_sha256": candidate_sha256,
+        "condition_fingerprint": cond_fp,
+        "expected_applications": len(applications),
+        "checked_applications": len(checked),
+        "applications": evaluated,
+        "fails": fails,
+        "blocking_unknowns": blocking_unknowns,
+        "not_applicable_with_evidence": na,
+        "ok": not fails and not blocking_unknowns,
+    }

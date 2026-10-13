@@ -134,11 +134,47 @@ class EmissionRecord(BaseModel):
     issues: list[str] = Field(default_factory=list)
 
 
+class ContentPreservationPolicy(BaseModel):
+    """What must survive a restyle (meaning), separate from geometry.
+
+    Default restyle: full business content preserved, no rewrites, no
+    splits. Geometry freedom lives in LayoutPolicy, never here.
+    """
+
+    model_config = StrictModel
+
+    preserve_required_text: bool = True
+    preserve_numbers_units_conditions: bool = True
+    preserve_relations: bool = True
+    preserve_slide_count: bool = True
+    preserve_slide_order: bool = True
+    preserve_hidden_flags: bool = True
+    allow_text_rewrite: bool = False
+    allow_slide_split: bool = False
+
+
+class LayoutPolicy(BaseModel):
+    """How geometry may change. Restyle default is recompose.
+
+    preserve_structure / style_only are explicitly requested modes,
+    never silent fallbacks. Source geometry survives only as an
+    explicit scene decision with fit evidence.
+    """
+
+    model_config = StrictModel
+
+    mode: Literal["recompose", "style_only", "preserve_structure"] = (
+        "recompose")
+    allow_source_geometry_fallback: bool = False
+    allow_new_target_nodes: bool = True
+    require_measured_fit: bool = True
+
+
 class ExportOptions(BaseModel):
     model_config = StrictModel
 
     workflow: ExportWorkflow = "presentation"
-    preserve_structure: bool = True
+    preserve_structure: bool = False
     diagnostic: bool = True
     allow_opaque_carry: bool = True
     allow_split: bool = False
@@ -175,6 +211,10 @@ class ContentDiff(BaseModel):
     changed: list[str] = Field(default_factory=list)
     dangling: list[str] = Field(default_factory=list)
     unexpected_rewrites: list[str] = Field(default_factory=list)
+    # Stage6 §3.2: authorized omits (confirmed decoration removed by an
+    # explicit classification decision with evidence + authorization).
+    # Reported, never silent; does not fail the diff.
+    omitted_authorized: list[str] = Field(default_factory=list)
     ok: bool = False
 
 
@@ -246,6 +286,15 @@ class NativeBuildResult(BaseModel):
     strict_output_ready: bool = False
     issues: list[str] = Field(default_factory=list)
     artifacts: dict[str, str] = Field(default_factory=dict)
+    # Stage 5 scoped additions (all default false/empty; additive only).
+    layout_resolved: bool = False
+    saved_geometry_verified: bool = False
+    measurement_verified_for_profile: str = ""
+    fonts_discovered: bool = False
+    fonts_browser_verified: bool = False
+    fonts_native_renderer_verified: bool = False
+    native_render_verified_for_scope: str = ""
+    visual_review_status: str = "pending"
 
     @model_validator(mode="after")
     def _strict_never_implied(self) -> NativeBuildResult:
@@ -273,3 +322,12 @@ class ResolvedSlide(BaseModel):
     geometry_emu: dict[str, dict[str, int]] = Field(default_factory=dict)
     diagnostic_geometry: bool = True
     issues: list[str] = Field(default_factory=list)
+    # Stage 5: payload refs kept at source geometry (decor/connector
+    # passthrough). Validators check these against the canvas, not the
+    # content box; the exporter still binds their atoms.
+    passthrough_refs: list[str] = Field(default_factory=list)
+    # Stage 5 §8: resolved table grids (column widths / row heights, EMU)
+    # keyed by source object id. The exporter applies them to the native
+    # grid; the saved-bytes gate compares them against reopened bytes.
+    table_layout_emu: dict[str, dict[str, list[int]]] = Field(
+        default_factory=dict)

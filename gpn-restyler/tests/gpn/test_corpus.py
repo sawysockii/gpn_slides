@@ -154,3 +154,30 @@ def test_manifest_deterministic(tmp_path: Path) -> None:
     project = _make_project(tmp_path / "proj")
     sources = resolve_ontology_sources(project)
     assert sources.ontology_corpus_hash == resolve_ontology_sources(project).ontology_corpus_hash
+
+
+def test_original_assets_source_immutable() -> None:
+    """Stage 5 §13.1: normative inputs are read-only facts. The ontology
+    JSON/Markdown and the user style corpus keep their pinned SHA-256;
+    the pipeline must fail loudly rather than rewrite them (corpora live
+    outside the code tree and outside runs/)."""
+    import hashlib
+
+    PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+    def sha(path: Path) -> str:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    assert (PROJECT_ROOT / "ontology" / "GPN_Slide_Design_Ontology.json"
+            ).is_file()
+    assert sha(PROJECT_ROOT / "ontology" / "GPN_Slide_Design_Ontology.json"
+               ) == "d24be59d5b52f67f1edf28b15722615ac01488c6553a0f17ffe0278fda6b7a90"
+    assert sha(PROJECT_ROOT / "ontology" / "GPN_Slide_Design_Ontology.md"
+               ) == "a9a2fe1c584a898c2af558b32bfa84b217b591966365455dd926a2fcc8b5058e"
+    assert sha(PROJECT_ROOT / "slide_examples" / "slide_examples.pptx"
+               ) == "0c6d6c00b206a8607ff4b1d17102b283d8120339015773cbff8e906827786ae0"
+    # No run, cache, index or packet artifacts may live inside the corpora.
+    for root in (PROJECT_ROOT / "ontology", PROJECT_ROOT / "slide_examples"):
+        names = {p.name for p in root.iterdir()}
+        assert not (names & {"runs", ".measurement-cache", ".layout-cache",
+                             "index", "packets", "plans"}), names

@@ -194,13 +194,29 @@ def prepare_corporate_profiles(
         if any(i.severity == Severity.ERROR for i in derivation.issues):
             blockers.extend(derivation.issues)
 
+        from .typography import build_font_inventory_from_discovery, discover_local_fonts
         fonts_dir_raw = getattr(getattr(config, "paths", None), "fonts_dir",
                                 "assets/fonts")
         fonts_dir = project_root / str(fonts_dir_raw)
         required_faces: set[str] = set()
         for role in compiled.roles.values():
             required_faces.update(role.allowed_faces)
-        inventory = inventory_fonts(fonts_dir, required_faces)
+        # Stage 5 §4: system-wide discovery first (configured fonts_dir is
+        # its first root); exact internal-name matching, never filename.
+        # The old single-dir GPN_FONTS_MISSING is recomputed, not carried.
+        discovery = discover_local_fonts(config, project_root=project_root)
+        atomic_write_json(run_dir / "font_discovery.json", discovery)
+        artifacts["font_discovery"] = str(run_dir / "font_discovery.json")
+        inventory = build_font_inventory_from_discovery(
+            discovery, required_faces)
+        if inventory.missing_faces and fonts_dir.is_dir():
+            legacy = inventory_fonts(fonts_dir, set(inventory.missing_faces))
+            for face, asset in legacy.faces.items():
+                if face in inventory.missing_faces:
+                    inventory.faces[face] = asset
+                    inventory.missing_faces.remove(face)
+                    if face in inventory.unverified_faces:
+                        inventory.unverified_faces.remove(face)
         atomic_write_json(run_dir / "font_inventory.json", inventory)
         artifacts["font_inventory"] = str(run_dir / "font_inventory.json")
         if inventory.missing_faces:

@@ -62,12 +62,75 @@ def open_template(template_path: str | Path) -> Any:
     return Presentation(str(path))
 
 
-def blank_slide_layout(prs: Any, layout_index: int = 6) -> Any:
-    """Return the blank layout (index 6 by OOXML convention, verified)."""
+def blank_slide_layout(prs: Any, layout_index: int | None = None) -> Any:
+    """Return a truly blank layout (verified, never hardcoded Contacts).
+
+    Recovery fix (2026-10-11): the previous hardcoded ``layout_index=6``
+    selected ``slideLayout7`` ("Контакты") in the derived template, putting
+    contact-specific furniture on every proposal slide. Now the layout is
+    chosen by evidence: fewest placeholders, preferring names containing
+    blank/empty/pustoj. An explicit index is honored only when it points at
+    such a blank layout; otherwise the evidence-based choice wins.
+    """
     layouts = list(prs.slide_layouts)
-    if layout_index < len(layouts):
-        return layouts[layout_index]
-    return layouts[-1]
+    if not layouts:
+        raise ValueError("template has no slide layouts")
+    if layout_index is not None and 0 <= layout_index < len(layouts):
+        cand = layouts[layout_index]
+        try:
+            ph = list(cand.placeholders)
+            nm = (cand.name or "").lower()
+            if len(ph) == 0 or "blank" in nm or "пуст" in nm or "empty" in nm:
+                return cand
+        except Exception:  # noqa: BLE001 - fall through to evidence search
+            pass
+    def _score(lay: Any) -> tuple[int, int, str]:
+        try:
+            n_ph = len(list(lay.placeholders))
+        except Exception:  # noqa: BLE001
+            n_ph = 99
+        nm = str(getattr(lay, "name", "") or "").lower()
+        blank_bonus = 0 if ("blank" in nm or "пуст" in nm or "empty" in nm) else 1
+        contact_penalty = 5 if ("контакт" in nm or "contact" in nm) else 0
+        return (blank_bonus, n_ph + contact_penalty, nm)
+    return sorted(layouts, key=_score)[0]
+
+
+def strip_shape_effect_inheritance(shape: Any) -> None:
+    """Normalize a fresh shape to normative no-effect (recovery §5).
+
+    python-pptx inserts ``<p:style>`` with ``a:effectRef idx=1/2`` pointing
+    at theme ``effectStyleLst`` entries that contain ``a:outerShdw``. A shape
+    without a direct ``a:effectLst`` is therefore NOT effect-free. This
+    helper removes the inherited style refs and writes an explicit empty
+    ``a:effectLst`` on the shape properties so ``EffectiveEffects`` resolves
+    to none. Safe to call on textboxes/autoshapes/connectors/pictures.
+    """
+    el = getattr(shape, "_element", None)
+    if el is None:
+        return
+    # p:sp / p:cxnSp / p:pic each carry p:spPr or p:cxnSpPr/p:nvPr structure
+    # holding a:effectLst or p:style/effectRef. Strip both levels.
+    for sp_pr in list(el.iter()):
+        tag = etree.QName(sp_pr).localname if isinstance(sp_pr.tag, str) else ""
+        if tag == "style":
+            # Remove effectRef/lnRef/fillRef/fmtRef children; drop the whole
+            # p:style node so no theme effect applies.
+            parent = sp_pr.getparent()
+            if parent is not None:
+                parent.remove(sp_pr)
+        elif tag == "effectLst":
+            parent = sp_pr.getparent()
+            if parent is not None:
+                parent.remove(sp_pr)
+    # Write explicit empty effectLst on every spPr/cxnSpPr so inheritance
+    # cannot reintroduce a shadow downstream.
+    a_ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    p_ns = "http://schemas.openxmlformats.org/presentationml/2006/main"
+    for pr_tag in (f"{{{a_ns}}}spPr", f"{{{p_ns}}}cxnSpPr"):
+        for pr in el.findall(f".//{pr_tag}"):
+            if pr.find(f"{{{a_ns}}}effectLst") is None:
+                etree.SubElement(pr, f"{{{a_ns}}}effectLst")
 
 
 def add_slide(prs: Any, layout: Any = None) -> Any:
@@ -133,6 +196,40 @@ def add_table(slide: Any, rows: int, cols: int, left_emu: int, top_emu: int,
     """Add a native table graphic frame."""
     return slide.shapes.add_table(rows, cols, Emu(left_emu), Emu(top_emu),
                                   Emu(width_emu), Emu(height_emu))
+
+
+DECOR_PRESET_MAP = {
+    "rect": "RECTANGLE",
+    "roundRect": "ROUNDED_RECTANGLE",
+    "ellipse": "OVAL",
+}
+
+
+def add_autoshape(slide: Any, preset_name: str, left_emu: int, top_emu: int,
+                  width_emu: int, height_emu: int) -> Any:
+    """Add a native autoshape with an explicit preset geometry token."""
+    from pptx.enum.shapes import MSO_AUTO_SHAPE_TYPE
+
+    preset = getattr(MSO_AUTO_SHAPE_TYPE, preset_name, None)
+    if preset is None:
+        raise ValueError(f"unknown autoshape preset: {preset_name!r}")
+    return slide.shapes.add_shape(
+        preset, Emu(left_emu), Emu(top_emu),
+        Emu(width_emu), Emu(height_emu))
+
+
+def add_straight_connector(slide: Any, left_emu: int, top_emu: int,
+                           width_emu: int, height_emu: int) -> Any:
+    """Add a native straight connector (source ``line`` geometry).
+
+    python-pptx takes begin/end coordinates (not a box): the end point
+    is begin + extent, so horizontal/vertical zero extents stay valid.
+    """
+    from pptx.enum.shapes import MSO_CONNECTOR_TYPE
+
+    return slide.shapes.add_connector(
+        MSO_CONNECTOR_TYPE.STRAIGHT, Emu(left_emu), Emu(top_emu),
+        Emu(left_emu + width_emu), Emu(top_emu + height_emu))
 
 
 def add_picture(slide: Any, image_path: str | Path, left_emu: int, top_emu: int,
@@ -250,7 +347,14 @@ def assemble_final_package(
     tmp = output_path.with_suffix(output_path.suffix + ".tmp-assemble")
     with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for name in sorted(members):
-            zf.writestr(name, members[name])
+            # Reproducible packaging: fixed entry timestamps, so identical
+            # slide content yields identical bytes across rebuilds (reviews
+            # transfer by hash). NOTE: docProps/core.xml dcterms still
+            # carry python-pptx save time inside the bytes; full byte
+            # reproducibility is not claimed until those are normalized.
+            info = zipfile.ZipInfo(name, date_time=(2020, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            zf.writestr(info, members[name])
     tmp.replace(output_path)
     digest = sha256_bytes(output_path.read_bytes())
     return {"path": str(output_path), "sha256": digest,
@@ -314,7 +418,9 @@ def clean_template_copy(
     tmp = out.with_suffix(".pptx.tmp")
     with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for name in sorted(members):
-            zf.writestr(name, members[name])
+            info = zipfile.ZipInfo(name, date_time=(2020, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            zf.writestr(info, members[name])
     tmp.replace(out)
     # The clean copy must reopen with zero content slides.
     check = Presentation(str(out))

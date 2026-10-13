@@ -394,7 +394,69 @@ def _build_parser() -> argparse.ArgumentParser:
                            default="presentation")
     gpn_build.add_argument("--overwrite", action="store_true")
     gpn_build.add_argument("--llm-provider", choices=("local", "local_server", "harness"),
-                           default=None)
+                          default=None)
+    gpn_layout = gpn_sub.add_parser(
+        "layout",
+        help="Measured build: composition -> Chromium -> resolution -> "
+             "native exporter -> saved-bytes checks (Stage 5)")
+    gpn_layout.add_argument("--run-dir", type=Path, required=True)
+    gpn_layout.add_argument("--plans-dir", type=Path, required=True)
+    gpn_layout.add_argument("--workflow", choices=("presentation", "document"),
+                            default="presentation")
+    gpn_layout.add_argument("--overwrite", action="store_true")
+    gpn_layout.add_argument("--resume", action="store_true")
+    gpn_layout.add_argument("--no-measurement-cache", action="store_true")
+    gpn_layout.add_argument("--diagnostic", action="store_true")
+    gpn_layout.add_argument("--render", action="store_true",
+                            help="Run the native render probe after export")
+    gpn_layout.add_argument("--test-only-profile", action="store_true",
+                            help="Engine checks with the test font (never production)")
+    gpn_layout.add_argument("--layout-mode",
+                            choices=("preserve_structure", "recompose"),
+                            default=None)
+    gpn_layout.add_argument("--candidate-name", type=str, default=None)
+    gpn_layout.add_argument("--llm-provider",
+                            choices=("local", "local_server", "harness"),
+                            default=None)
+    gpn_restyle = gpn_sub.add_parser(
+        "restyle",
+        help="Restyle a PPTX/PPT through the durable runner (Stage 7)")
+    gpn_restyle.add_argument("source", type=Path)
+    gpn_restyle.add_argument("--output", type=Path, required=True)
+    gpn_restyle.add_argument("--run-dir", type=Path, default=None)
+    gpn_restyle.add_argument("--llm-provider",
+                             choices=("harness", "local_server"),
+                             default="harness")
+    gpn_restyle.add_argument("--overwrite", action="store_true")
+    gpn_restyle.add_argument("--response", type=Path, default=None,
+                             action="append", dest="responses")
+    gpn_create = gpn_sub.add_parser(
+        "create",
+        help="Create a deck from PDF/DOC/DOCX/MD/TXT/prompt (Stage 7)")
+    gpn_create.add_argument("source", type=Path, nargs="?", default=None)
+    gpn_create.add_argument("--prompt", type=str, default=None)
+    gpn_create.add_argument("--prompt-file", type=Path, default=None)
+    gpn_create.add_argument("--output", type=Path, required=True)
+    gpn_create.add_argument("--run-dir", type=Path, default=None)
+    gpn_create.add_argument("--slides", type=int, default=None)
+    gpn_create.add_argument("--llm-provider",
+                            choices=("harness", "local_server"),
+                            default="harness")
+    gpn_create.add_argument("--overwrite", action="store_true")
+    gpn_create.add_argument("--response", type=Path, default=None,
+                            action="append", dest="responses")
+    gpn_resume = gpn_sub.add_parser(
+        "resume", help="Resume a durable run (Stage 7)")
+    gpn_resume.add_argument("run_dir", type=Path)
+    gpn_resume.add_argument("--response", type=Path, default=None,
+                            action="append", dest="responses")
+    gpn_status = gpn_sub.add_parser(
+        "status", help="Show durable run status (Stage 7)")
+    gpn_status.add_argument("run_dir", type=Path)
+    gpn_bundle = gpn_sub.add_parser(
+        "bundle", help="Build a review bundle (Stage 7)")
+    gpn_bundle.add_argument("run_dir", type=Path)
+    gpn_bundle.add_argument("--output", type=Path, required=True)
     _add_global_options(gpn)
 
     return parser
@@ -4693,19 +4755,37 @@ def _cmd_gpn(args: argparse.Namespace) -> int:
             argv.append(str(value))
     if getattr(args, "gpn_command", None):
         argv.append(args.gpn_command)
-        for flag in ("run_dir", "reference_library", "source", "input",
-                     "edits_json", "output", "slide_id", "plans_dir", "workflow"):
+        # Positional run_dir for resume/status/bundle (not a flag).
+        skip_flags = set()
+        if args.gpn_command in ("resume", "status", "bundle"):
+            argv.append(str(args.run_dir))
+            skip_flags.add("run_dir")
+        # Positional source for restyle/create.
+        if args.gpn_command in ("restyle", "create") and \
+                getattr(args, "source", None) is not None:
+            argv.append(str(args.source))
+        for flag in ("run_dir", "reference_library", "input",
+                     "edits_json", "output", "slide_id", "plans_dir", "workflow",
+                     "layout_mode", "candidate_name", "prompt", "prompt_file"):
+            if flag in skip_flags:
+                continue
             value = getattr(args, flag, None)
             if value is not None:
                 argv.append(f"--{flag.replace('_', '-')}")
                 argv.append(str(value))
-        for flag in ("candidates", "llm_provider", "harness_wait_seconds"):
+        for flag in ("candidates", "llm_provider", "harness_wait_seconds",
+                     "slides"):
             value = getattr(args, flag, None)
             if value is not None:
                 argv.append(f"--{flag.replace('_', '-')}")
                 argv.append(str(value))
+        for response in getattr(args, "responses", None) or []:
+            argv.append("--response")
+            argv.append(str(response))
         for flag in ("require_production_assets", "check_model", "overwrite",
-                     "no_plan_cache", "diagnostic_candidate"):
+                     "no_plan_cache", "diagnostic_candidate", "resume",
+                     "no_measurement_cache", "diagnostic", "render",
+                     "test_only_profile"):
             if getattr(args, flag, False):
                 argv.append(f"--{flag.replace('_', '-')}")
     return gpn_main(argv)

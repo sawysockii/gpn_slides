@@ -662,10 +662,32 @@ def test_clrmapovr_affects_scheme_color() -> None:
 
 
 def test_doctor_asset_scope() -> None:
+    """Stage 5 §4: installed fonts satisfy the doctor asset check (the old
+    fonts_dir-only GPN_FONTS_MISSING is recomputed, not carried)."""
     from types import SimpleNamespace
 
     from slides_cli.gpn.cli import _production_assets_status
 
+    ready, blockers = _production_assets_status(
+        PROJECT_ROOT, SimpleNamespace(paths=SimpleNamespace(
+            fonts_dir="assets/fonts")))
+    assert ready is True
+    assert not any(b["code"] == "GPN_FONTS_MISSING" for b in blockers)
+
+
+def test_doctor_asset_scope_empty_discovery(monkeypatch) -> None:
+    """With no discoverable fonts the doctor still reports GPN_FONTS_MISSING."""
+    from types import SimpleNamespace
+
+    import slides_cli.gpn.typography as typography
+    from slides_cli.gpn.cli import _production_assets_status
+    from slides_cli.gpn.models import FontDiscoveryReport
+
+    empty = FontDiscoveryReport(platform="test", search_roots=[],
+                                discovered=[], faces_by_internal_name={},
+                                errors=[])
+    monkeypatch.setattr(typography, "discover_local_fonts",
+                        lambda *a, **k: empty)
     ready, blockers = _production_assets_status(
         PROJECT_ROOT, SimpleNamespace(paths=SimpleNamespace(
             fonts_dir="assets/fonts")))

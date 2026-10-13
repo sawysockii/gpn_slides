@@ -1485,6 +1485,9 @@ def walk_shape_tree(
                     w=max(box.get("chCX", 0), 0), h=max(box.get("chCY", 0), 0),
                 ),
                 text=text,
+                rot_deg=float(box.get("rot", 0.0) or 0.0),
+                flip_h=bool(box.get("flipH", False)),
+                flip_v=bool(box.get("flipV", False)),
             )
             objects.append(
                 ObjectIR(
