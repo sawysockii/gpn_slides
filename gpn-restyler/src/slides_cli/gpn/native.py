@@ -290,6 +290,107 @@ def emit_text(
     return address
 
 
+def emit_rich_text_block(
+    paragraphs: list[dict[str, Any]],
+    box_emu: dict[str, int],
+    slide: Any,
+    context: NativeDeckContext,
+    *,
+    role: str = "",
+    rules: Any = None,
+    node_id: str = "",
+    surface_tokens: dict[str, str] | None = None,
+    slide_position: int = 0,
+) -> OutputShapeAddress:
+    """Emit one authored rich text block as a single native frame.
+
+    Several source spans are assembled into one ``p:sp``/``txBody`` with
+    real paragraph boundaries and per-run resolved styles (§3.2/§3.3).
+    Frame insets are written once for the authored block; paragraph spacing
+    and list indents govern internal flow. Every source span keeps an
+    addressable binding (``source_ref`` + paragraph index).
+    """
+    shape = adapter.add_textbox(
+        slide,
+        int(box_emu.get("x", 914400)), int(box_emu.get("y", 914400)),
+        int(box_emu.get("w", 3657600)), int(box_emu.get("h", 914400)),
+    )
+    adapter.set_no_autofit(shape)
+    adapter.strip_shape_effect_inheritance(shape)
+    with contextlib.suppress(Exception):
+        shape.fill.background()
+    with contextlib.suppress(Exception):
+        shape.line.fill.background()
+
+    style = _role_style(role, rules) if rules is not None else {}
+    tokens = surface_tokens or {}
+    for key in ("foreground_token", "surface_token", "stroke_token"):
+        token = str(tokens.get(key, "") or "")
+        if not token or rules is None:
+            continue
+        rgb = _resolve_token_rgb(token, rules)
+        if rgb and key == "foreground_token":
+            style = {**style, "resolved_rgb": rgb}
+        elif not rgb:
+            context.issues.append(
+                f"SURFACE_TOKEN_UNKNOWN: {node_id} {key} token "
+                f"{token!r} not in the loaded palette")
+
+    tf = shape.text_frame
+    tf.word_wrap = True
+    # Insets are a property of the authored block, paid exactly once (§5.2).
+    for attr, pt in (("margin_left", 7.2), ("margin_right", 7.2),
+                     ("margin_top", 3.6), ("margin_bottom", 3.6)):
+        emu = int(round(pt * 12700))
+        with contextlib.suppress(Exception):
+            setattr(tf, attr, emu)
+
+    first = True
+    for pidx, para in enumerate(paragraphs):
+        p = tf.paragraphs[0] if first else tf.add_paragraph()
+        first = False
+        p.alignment = None
+        source_ref = str(para.get("source_ref", "") or node_id)
+        para_id = str(para.get("id", "") or f"{source_ref}:{pidx}")
+        # Per-paragraph spacing is applied once, from the authored spec.
+        for attr, key in (("space_before", "space_before_pt"),
+                          ("space_after", "space_after_pt")):
+            value = para.get(key)
+            if value:
+                with contextlib.suppress(Exception):
+                    setattr(p, attr, float(value))
+        line_spacing = para.get("line_spacing_value")
+        if line_spacing:
+            with contextlib.suppress(Exception):
+                p.line_spacing = float(line_spacing)
+        for ridx, run_data in enumerate(para.get("runs", []) or [], start=1):
+            text = str(run_data.get("text", "") or "")
+            if not text:
+                continue
+            r = p.add_run()
+            display, _ = (apply_display_transform(text, role, rules)
+                          if rules is not None else (text, "identity"))
+            r.text = display
+            run_style = dict(style)
+            run_style.update(dict(run_data.get("style", {}) or {}))
+            _style_run(r, run_style, None)
+            _bind_atom(context, slide, shape, source_ref,
+                       str(run_data.get("id", "") or f"{para_id}:{ridx}"),
+                       f"para[{pidx}]/run[{ridx}]", "native_rebuild")
+        _bind_atom(context, slide, shape, source_ref, para_id,
+                   f"para[{pidx}]", "native_rebuild")
+
+    address = _address_of(slide, shape, "text")
+    context.emission_records.append(EmissionRecord(
+        source_object_id=node_id or paragraphs[0].get("source_ref", ""),
+        strategy="native_rich_block", address=address))
+    context.issues.append(
+        f"RICH_TEXT_BLOCK_EMITTED: {node_id} spans="
+        f"{len({str(p.get('source_ref', '')) for p in paragraphs})} "
+        f"paragraphs={len(paragraphs)}")
+    return address
+
+
 def _emit_field(p: Any, run: Any, style: dict[str, Any]) -> None:
     """Append a real ``a:fld`` element preserving id/type/cached text."""
     meta = getattr(run, "field", None)

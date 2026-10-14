@@ -1026,3 +1026,228 @@
 - Разрешить плотность: либо движок раскладывает multi-run абзацы в одном нативном
   блоке (эмиттер), либо сцены объявляют меньше текстовых блоков на колонку.
   До этого — следующий гейт с новыми сценами, а не polish текущих.
+
+## Этап 8.1 — Исправление ложной «плотности»: schema, footprint линий, authored blocks, 2D-поиск
+
+Работа по `opencode_layout_engine_recovery.md`. Новый ран:
+`runs/stage7/2026-10-14-layout-recovery/`. Предыдущие разделы выше не
+редактировались.
+
+### Реализовано
+
+**1. Reconciliation старых claims** (`audit/claims_reconciliation.json`).
+Зафиксированы 10 старых утверждений с вердиктом и доказательством; 7 из
+10 помечены `invalid` (в т.ч. «8 слайдов не влезает из-за плотности»,
+`budget 0/6 exhausted`, `scene_validated` без schema-проверки, «scene
+tasks получают concept», «surface tokens сохранены», «solver умеет 2D»).
+3 подтверждены как дефекты (line footprint, duplicate zone_id, source 1:1
+boxing).
+
+**2. Реальная schema-валидация сцен** (`planner.py`).
+- `validate_scene_response(response, task, semantic, concept, rules) ->
+  SceneValidationReport`: payload-схема, уникальность zone_id,
+  совпадение candidate/slide, покрытие required units и relations,
+  допустимость role/surface-токенов из загруженного JSON, конечность
+  геометрии, привязка к concept.
+- Уникальность `zone_id` добавлена и в `validate_planned_intent`.
+- `restyle_runner._advance_stage` теперь вызывает валидацию **до** записи
+  `scene_validated`; при провале состояние становится `schema_invalid` и
+  добавляется finding `SCENE_SCHEMA_INVALID`.
+- **Факт подтверждён на архиве:** все 24 архивных плана содержали `min_h`
+  в зонах (847 вхождений) — их `LayoutZone` (extra='forbid') отвергает.
+  До исправления runner писал `scene_validated` без вызова схемы
+  (`audit/scene_schema_validation.json`: `invalid_before: 24`).
+
+**3. Связка concept ↔ scene task.** `_scene_generation_task` теперь
+включает полный `visual_concept` в пакет. Подтверждено, что раньше все 24
+пакета после исключения `concept_id/concept_key` были побайтово
+эквивалентны (1 distinct hash на слайд) — фактического visual concept
+модель не получала.
+
+**4. Footprint линий/стрелок — по реальным данным source IR.**
+`_is_stroked_path()` определяет stroked path по `geometry_token='line'`
+либо по фигуре без текста с нулевой высотой и реальной шириной;
+`_stroke_width_pt()` берёт толщину из `source_line.width_emu`.
+`_resolve_hint_overlaps` получил `node_kinds`/`stroke_widths`, и для
+коннекторов использует **envelope обводки**, а не высоту зоны.
+На реальном слайде 6: обе линии `z-rule` распознаны (1.2 pt и 0.65 pt),
+три декоративные карточки `roundRect` (h=1581912 EMU) корректно
+**не** распознаны как пути.
+`audit/s6_rule_foot_collision_before_after.json` фиксирует архивный trace
+(первая линия сдвинула outcome, вторая оставила footer без места) и новую
+модель footprint.
+
+**5. Surface contract доведён до resolved slide.** `_build_resolved_slide`
+больше не теряет `surface_token`/`foreground_token`/`stroke_token`;
+поля добавлены в `ComponentNode`.
+
+**6. Authored blocks вместо source-object boxing.** Текстовые объекты одной
+авторской зоны собираются в один `rich_text`-компонент
+(`composition.py`), измеряются как единый frame с реальными границами
+абзацев (`_rich_text_paragraphs`, `layout.py`), пишутся одним нативным
+`p:sp`/`txBody` (`native.emit_rich_text_block`), а `export_pipeline.emit_slide`
+стал **target-driven**: сначала авторские блоки, затем per-source loop с
+пропуском уже слитых span'ов. Поля `source_ref`/`source_paragraph_index`
+добавлены в `MeasureParagraph` для адресуемости span'ов.
+`EmissionStrategy` дополнена значением `native_rich_block`.
+
+**7. Двумерный поиск размещения.** Добавлена `place_side_by_side()` —
+при исчерпании сдвига вниз ищется свободное место по обеим осям
+(только перенос, без изменения измеренного размера). Воспроизведён
+контрпример §1.3 (регион 400×100, два объекта 100×100): ранее
+`no_room_below`, теперь найдена законная row-размещение без пересечений.
+`no_room_below` сохраняется как **локальный** конфликт с флагом
+`directional_search_only`.
+
+**8. Честные статусы вместо `LAYOUT_DENSITY_INFEASIBLE`/`budget 0/6`.**
+`LayoutResolutionResult.status` расширен значениями
+`schema_invalid | unsupported_representation | constraint_conflict |
+needs_recompose | search_exhausted`. Сообщения содержат реальные
+счётчики попыток и `termination=...`.
+
+### Результат на реальных данных (NTC_business_AI_GPN.pptx)
+
+Прогон реального public runner на скорректированных архивных планах
+(без bespoke-патча под этот input id):
+
+```text
+run: runs/stage7/2026-10-14-layout-recovery/main/
+was: 0 из 8 slides resolved
+now: 3 из 8 resolved (слайды 1, 6, 8)
+```
+
+Слайд **6** — основной кейс спецификации (§1.2) — теперь `resolved`.
+Остальные 5 дают честные локальные статусы (`needs_recompose`,
+`constraint_conflict`) с конкретными дефицитами (1.5–33 pt), а не
+заявление о плотности материала.
+
+Сохранность содержимого в нативном выводе (3 слайда):
+абзацев 12 / 23 / 34 — **точно совпадает** с таблицей исходника (§1.1)
+для слайдов 1, 6, 8.
+
+Native render (после установки poppler): LibreOffice 26.8.1.1,
+`page_count=3`, `text_spans=346`, page images получены и **просмотрены
+вручную**:
+- стр. 1 (слайд 1): кикер/заголовок/лид, синяя панель-поверхность
+  «НТЦ + ДО» (подтверждает сквозной проход surface-токенов), карточка с
+  четырьмя пунктами, футер и номер — пересечений нет;
+- стр. 2 (слайд 6, кейс §1.2): трёхколоночная композиция 01/02/03, строка
+  результата на месте, футерная полоса цела — пересечений нет;
+- стр. 3 (слайд 8, самый плотный — 213 слов): сетка 2×2, все факты, числа,
+  оговорки и строки «Источники» сохранены — пересечений нет.
+
+`audit/native_render_evidence.json`. Самый плотный слайд исходника
+(213 слов) целиком помещается при нормативных кеглях — это прямо
+опровергает прежний вывод о «непомещаемости по плотности».
+
+### Проблемы (открыты, с evidence)
+
+1. **5 из 8 слайдов ещё не решены** — с реальными остаточными дефицитами
+   по вертикали (1.5, 3.1, 6.3, 10.7, 33.0 pt) и один `constraint_conflict`
+   с неразрешёнными парами. Это уже честные локальные конфликты, но дек
+   не собран. Основной остающийся дефицит движка: нет полноценного
+   иерархического flow/grid с перераспределением ширины и повторным
+   замером по выбранной ширине.
+2. **Rich blocks не сработали на этих планах, потому что архивные планы
+   кладут каждый объект в свою зону** (по одному `content_ref` на зону).
+   Возможность движка доказана тестами, но авторские планы под неё ещё не
+   пересобраны — это работа этапа проектирования (§8.4), а не движка.
+3. ~~`pdffonts`/`pdftoppm` не установлены~~ — **решено**: poppler установлен,
+   рендер даёт page images и шрифтовую проверку. Остаточный finding:
+   LibreOffice подставил `GPN_DIN Condensed Bold/Regular` в PDF
+   (`expected faces absent from render`) — это подстановка в рендерере,
+   байты шрифтов на диске верифицированы по sha256 и используются в
+   измерении; требуется отдельная проверка в PowerPoint UI.
+4. **`font_inventory.json` из архива содержит устаревший путь**
+   (`GPN_DINCondensed-Bold.otf` без подчёркивания) — байты на диске верны
+   (sha256 совпадает), но записанный путь не находится. Инвентарь
+   перегенерирован из реального discovery, а не исправлен вручную.
+5. **`template_profile.json` не верифицирован** (`is_verified=false`,
+   `content_box=null`): layout5 содержит только плейсхолдер номера
+   слайда. Использован производный base template из архива
+   (sha256 `7ed9368f…`, переиспользован, не копируется в каждый каталог).
+   Собственно `verified_frame.json` по требованию §12.2 ещё не сформирован.
+
+### Тесты
+
+- Полный сюит: `uv run pytest tests/gpn --no-cov` → **363 passed, 3 skipped
+  in 1365.67s (0:22:45)**. (Было 352 до этого этапа.)
+- Новый файл `tests/gpn/test_stage9_layout_recovery.py` — **14 тестов** по
+  причинам (§10.1): архивный `min_h` → schema_invalid; дубли zone_id;
+  line footprint снимает ложные конфликты; контрфакт (без connector-типа
+  конфликт остаётся, т.е. не blanket allow-overlap); row-размещение в
+  400×100 вместо глобального infeasible; три source-объекта → один
+  authored block; сохранение paragraph-границ и source_ref; padding
+  один раз; сквозной проход surface-токенов; block решается реальными
+  шрифтами.
+- Эти тесты **поймали два реальных бага** в моей же реализации: неверное
+  поле payload (`payload.text` вместо `payload.paragraphs`) при
+  группировке и lookup стиля по source-ref вместо id блока.
+- `ruff check src/ tests/` → **All checks passed**.
+- Утверждения старых тестов, кодировавшие старый контракт статусов
+  (`infeasible`, `INFEASIBLE_OVERLAP`, `budget`), обновлены на новый
+  контракт; инвариант «никакого уменьшения кегля при перегрузке»
+  сохранён без изменений.
+
+### Окружение (изменения на машине)
+
+- `uv sync` — создано `.venv` (Python 3.12.13).
+- `npm install` + `npx playwright install chromium` в `tools/layout/`
+  — без этого падали 18 тестов измерения (`MEASUREMENT_TOOL_FAILED`).
+- `brew install --cask libreoffice` — native render (с согласия
+  пользователя).
+- `brew install poppler` — **в процессе**, не завершён.
+
+### Запросы пользователя
+
+- `opencode_layout_engine_recovery.md` §1–§8: пункты 1.1–1.8 подтверждены
+  на данных; §2 (schema), §4.2 (footprint), §4.3 (surface), §5.2 (padding
+  один раз), §6.2 (2D-поиск), §7 (честные статусы) — реализованы.
+- Согласие получено на установку LibreOffice через brew.
+
+### Предстоит
+
+- Иерархический flow/grid solver с перераспределением ширины и повторным
+  замером — чтобы снять оставшиеся 5 слайдов и вертикальные дефициты.
+- Пересобрать авторские планы с реальной группировкой (semantic groups),
+  чтобы authored blocks заработали на материале.
+- Сформировать `verified_frame.json` из геометрии исходника (все 8
+  слайдов дают согласованную область x 43.20..916.56, y 24.48..530.64 pt
+  на canvas 960×540).
+- Завершить установку poppler и выполнить PNG-ревью, repair и selection.
+- Dense-3x fixture, fragmentation invariance, полный review bundle (§12).
+
+### Передача на другую машину (состояние на момент коммита)
+
+Проверено перед коммитом: полный сюит `uv run pytest tests/gpn --no-cov` →
+**363 passed, 3 skipped** (22:45). После этого прогонa изменён только
+порядок импортов в `tests/gpn/test_stage9_layout_recovery.py`
+(`ruff --fix`); этот файл перезапущен отдельно → 14 passed,
+`ruff check src/ tests/` → clean.
+
+Окружение, обязательное для повторения (на новой машине):
+
+```bash
+cd gpn-restyler
+uv sync                              # .venv, Python 3.12.13
+(cd tools/layout && npm install && npx playwright install chromium)
+brew install --cask libreoffice      # native render
+brew install poppler                # pdffonts/pdftoppm/pdfinfo
+```
+
+Без `npm install` + chromium падают 18 тестов измерения
+(`MEASUREMENT_TOOL_FAILED`); без LibreOffice/poppler — рендер-gates.
+
+Артефакты ранов лежат вне git (`.gitignore`: `runs/`), поэтому на новой
+машине их нужно получить отдельно либо пересоздать:
+
+- `runs/stage7/2026-10-13-135452/` — исходный ран (source_ir, semantic deck,
+  24 автора сцен, base_template.pptx);
+- `runs/stage7/2026-10-14-layout-recovery/` — текущий ран (audit/*,
+  main/*, скорректированные планы в inputs/plans/*.json);
+- скрипты этапа: `runs/stage7/2026-10-14-layout-recovery/revalidate_scenes.py`
+  и `run_build.py` (воспроизводимый прогон).
+
+Точка продолжения: 5 нерешённых слайдов (2, 3, 4, 5, 7) требуют
+иерархического flow/grid solver; затем пересборка авторских планов с
+настоящей группировкой, PNG-ревью/repair/selection, dense-3x, review bundle.

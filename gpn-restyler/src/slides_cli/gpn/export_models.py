@@ -19,7 +19,8 @@ PreservationMode = Literal[
 ]
 
 EmissionStrategy = Literal[
-    "native_rebuild", "native_transplant", "opaque_transplant", "unsupported"
+    "native_rebuild", "native_rich_block", "native_transplant",
+    "opaque_transplant", "unsupported"
 ]
 
 ExportWorkflow = Literal["presentation", "document"]

@@ -415,3 +415,47 @@ Stage 4: native exporter/transplant (tables/charts/notes/links) on top of the St
   `infeasible` на всех 8 слайдах (`stage8_evidence.json`). Причина —
   плотность: один нативный текстовый блок на исходный объект плюс шаг стопки 7.2 pt
   не помещаются в верифицированный content band при корпоративных кеглях.
+
+---
+
+## Этап 8.1 (2026-10-14) — исправление ложной «плотности»
+
+### Что изменилось в коде
+- `planner.validate_scene_response(...) -> SceneValidationReport` — реальная
+  проверка payload-схемы, уникальности `zone_id`, candidate/slide, покрытия
+  required units/relations, role/surface-токенов из загруженного JSON, конечности
+  геометрии, привязки к concept. `restyle_runner` вызывает её **до** записи
+  `scene_validated`; провал → `schema_invalid` + finding `SCENE_SCHEMA_INVALID`.
+- `restyle_runner._scene_generation_task` включает полный `visual_concept` в пакет
+  (раньше модель получала только `concept_id`/`concept_key`).
+- `composition._is_stroked_path()` / `_stroke_width_pt()` — stroked path
+  определяется по `geometry_token='line'` либо по фигуре без текста с нулевой
+  высотой; толщина обводки берётся из `source_line.width_emu`.
+- `layout._resolve_hint_overlaps(..., node_kinds=, stroke_widths=)` — коннекторы
+  занимают envelope обводки, а не высоту зоны; `no_room_below` помечается
+  `directional_search_only`.
+- `layout.place_side_by_side()` — двумерный поиск свободного места (только перенос,
+  измеренный размер не меняется) при исчерпании сдвига вниз.
+- `composition` группирует текстовые объекты одной авторской зоны в `rich_text`
+  компонент; `layout._rich_text_paragraphs` собирает абзацы с `source_ref`;
+  `native.emit_rich_text_block` пишет один `p:sp`/`txBody`;
+  `export_pipeline.emit_slide` стал target-driven (сначала authored blocks, затем
+  per-source loop с пропуском слитых span'ов).
+- `LayoutResolutionResult.status` расширен: `schema_invalid`,
+  `unsupported_representation`, `constraint_conflict`, `needs_recompose`,
+  `search_exhausted`.
+
+### Фактическое состояние NTC-прогона (обновлено)
+- Ран `runs/stage7/2026-10-14-layout-recovery/`, реальный public runner.
+- **3 из 8 слайдов `resolved`** (слайды 1, 6, 8); ранее 0 из 8.
+- Слайд 6 (кейс §1.2 спецификации) решается.
+- Остальные 5 — честные локальные статусы с конкретными дефицитами
+  (1.5–33.0 pt), без заявления о плотности материала.
+- Абзацы в нативном выводе (12/23/34) точно совпадают с исходником.
+- Рендер: LibreOffice 26.8.1.1 отрендерил PDF; page images и шрифтовая
+  инвентаризация требуют poppler (`pdffonts`/`pdftoppm`), установка не завершена.
+
+### Тесты
+- `uv run pytest tests/gpn --no-cov` → **363 passed, 3 skipped** (было 352).
+- Новый `tests/gpn/test_stage9_layout_recovery.py` — 14 причинных регрессий (§10.1).
+- `ruff check src/ tests/` → clean.

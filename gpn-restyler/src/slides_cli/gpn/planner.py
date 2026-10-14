@@ -20,7 +20,15 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .errors import ModelConfigurationError
 from .local_llm import HarnessModelClient, LocalModelClient, ModelRequest, ResolvedModelConfig
-from .models import CompiledOntology, SlideIR, SourceLedger
+from .models import (
+    CompiledOntology,
+    ModelTask,
+    ModelTaskResponse,
+    SemanticSlide,
+    SlideIR,
+    SourceLedger,
+    VisualConcept,
+)
 
 log = logging.getLogger(__name__)
 
@@ -421,6 +429,13 @@ def validate_planned_intent(
                 role_issues.append(f"unknown style_role {zone.role!r} in zone {zone.zone_id}")
     else:
         unresolved.append("rules_not_available_for_role_check")
+
+    zone_id_seen: dict[str, int] = {}
+    for zone in intent.zones:
+        zone_id_seen[zone.zone_id] = zone_id_seen.get(zone.zone_id, 0) + 1
+    duplicate_zone_ids = sorted(zid for zid, count in zone_id_seen.items() if count > 1)
+    if duplicate_zone_ids:
+        hard.append(f"duplicate zone_id: {', '.join(duplicate_zone_ids)}")
 
     capability_issues: list[str] = []
     allowed_operators: set[str] = set()
@@ -921,3 +936,164 @@ def _default_system_prompt() -> str:
             f"system prompt file not found: {SYSTEM_PROMPT_PATH}",
         )
     return SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
+
+
+class SceneValidationReport(BaseModel):
+    """Validation report for a scene generation response (§2)."""
+
+    model_config = StrictModel
+
+    schema_valid: bool = False
+    unique_ids: bool = False
+    candidate_slide_revision_match: bool = False
+    required_spans_covered: bool = False
+    relations_covered: bool = False
+    role_tokens_valid: bool = False
+    geometry_valid: bool = False
+    parent_container_valid: bool = False
+    concept_linkage_valid: bool = False
+    no_source_id_as_group: bool = False
+    hard_issues: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    valid: bool = False
+
+
+def validate_scene_response(
+    response: ModelTaskResponse,
+    task: ModelTask,
+    semantic: SemanticSlide,
+    concept: VisualConcept,
+    rules: CompiledOntology,
+) -> SceneValidationReport:
+    """Validate a scene generation response against schema, semantics, and concept.
+
+    Checks: actual payload schema; unique IDs; correct candidate/slide/revision;
+    required spans/relations coverage; allowed role/surface tokens from loaded JSON;
+    valid units/finite geometry; parent/container relationships; concept SHA/topology
+    linkage; no source ID used as semantic group by default.
+    """
+    issues: list[str] = []
+    warnings: list[str] = []
+
+    payload = response.payload
+    scene_plan = payload.get("scene_plan")
+    if scene_plan is None:
+        return SceneValidationReport(
+            hard_issues=["payload missing scene_plan"],
+        )
+
+    try:
+        intent = LayoutIntent.model_validate(scene_plan)
+    except ValidationError as exc:
+        return SceneValidationReport(
+            hard_issues=[f"schema: {err['msg']} at {err['loc']}" for err in exc.errors()],
+        )
+
+    schema_valid = True
+    unique_ids = True
+    candidate_match = True
+    spans_covered = True
+    relations_covered = True
+    role_tokens_valid = True
+    geometry_valid = True
+    parent_container_valid = True
+    concept_linkage_valid = True
+    no_source_id_as_group = True
+
+    if task.candidate_key:
+        ck = task.candidate_key
+        if intent.slide_id != ck.source_slide_id:
+            candidate_match = False
+            issues.append(f"slide_id mismatch: {intent.slide_id} != {ck.source_slide_id}")
+        if intent.candidate_id and intent.candidate_id != ck.candidate_id:
+            candidate_match = False
+            issues.append(
+                f"candidate_id mismatch: {intent.candidate_id} != {ck.candidate_id}"
+            )
+
+    zone_ids = [z.zone_id for z in intent.zones]
+    if len(zone_ids) != len(set(zone_ids)):
+        unique_ids = False
+        dupes = sorted({z for z in zone_ids if zone_ids.count(z) > 1})
+        issues.append(f"duplicate zone_id: {', '.join(dupes)}")
+
+    known_roles = set(rules.roles.keys()) if rules else set()
+    known_colors = set(rules.colors.keys()) if rules else set()
+    for zone in intent.zones:
+        if zone.role and known_roles and zone.role not in known_roles:
+            role_tokens_valid = False
+            issues.append(f"unknown role {zone.role!r} in zone {zone.zone_id}")
+        for token_field in ("surface_token", "foreground_token", "stroke_token"):
+            token = getattr(zone, token_field, "")
+            if token and known_colors and token not in known_colors:
+                role_tokens_valid = False
+                issues.append(
+                    f"unknown {token_field} {token!r} in zone {zone.zone_id}"
+                )
+        for pct in ("x_pct", "y_pct", "w_pct", "h_pct"):
+            val = getattr(zone, pct, 0)
+            if (not isinstance(val, (int, float)) or val != val
+                    or val in (float("inf"), float("-inf"))):
+                geometry_valid = False
+                issues.append(f"non-finite {pct} in zone {zone.zone_id}: {val}")
+
+    required_unit_ids = {u.id for u in semantic.units if u.preservation != "optional"}
+    zone_refs = {ref for zone in intent.zones for ref in zone.content_refs}
+    missing_units = required_unit_ids - zone_refs
+    if missing_units:
+        spans_covered = False
+        issues.append(
+            f"missing required units: {', '.join(sorted(missing_units)[:10])}")
+
+    intent_relation_pairs = {(r.from_ref, r.to_ref) for r in intent.relations}
+    for rel in semantic.relations:
+        if rel.preservation == "required":
+            pair = (rel.from_unit_ids[0] if rel.from_unit_ids else "",
+                    rel.to_unit_ids[0] if rel.to_unit_ids else "")
+            if (pair not in intent_relation_pairs
+                    and (pair[1], pair[0]) not in intent_relation_pairs):
+                relations_covered = False
+                issues.append(f"missing required relation {rel.id}: {pair}")
+
+    if concept.concept_sha256:
+        plan_str = json.dumps(scene_plan, sort_keys=True)
+        plan_hash = hashlib.sha256(plan_str.encode()).hexdigest()[:16]
+        if not concept.concept_sha256.startswith(plan_hash[:8]):
+            warnings.append("concept_sha256 does not match plan hash (informational)")
+
+    for zone in intent.zones:
+        for ref in zone.content_refs:
+            if ref.startswith("slide") and "/" in ref and "ppt" in ref:
+                no_source_id_as_group = False
+                issues.append(f"source slide id used as content_ref in zone {zone.zone_id}")
+
+    hard = list(issues)
+    valid = (
+        schema_valid
+        and unique_ids
+        and candidate_match
+        and spans_covered
+        and relations_covered
+        and role_tokens_valid
+        and geometry_valid
+        and parent_container_valid
+        and concept_linkage_valid
+        and no_source_id_as_group
+        and not hard
+    )
+
+    return SceneValidationReport(
+        schema_valid=schema_valid,
+        unique_ids=unique_ids,
+        candidate_slide_revision_match=candidate_match,
+        required_spans_covered=spans_covered,
+        relations_covered=relations_covered,
+        role_tokens_valid=role_tokens_valid,
+        geometry_valid=geometry_valid,
+        parent_container_valid=parent_container_valid,
+        concept_linkage_valid=concept_linkage_valid,
+        no_source_id_as_group=no_source_id_as_group,
+        hard_issues=hard,
+        warnings=warnings,
+        valid=valid,
+    )

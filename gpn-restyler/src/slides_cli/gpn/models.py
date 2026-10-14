@@ -1587,6 +1587,11 @@ class MeasureParagraph(BaseModel):
     list_kind: Literal["none", "bullet", "numbered"] = "none"
     first_line_indent_pt: float = 0.0
     left_indent_pt: float = 0.0
+    # Span addressing for authored many-to-one blocks (§3.2): which source
+    # object and which paragraph of it this target paragraph represents.
+    # Empty for the legacy one-object-per-component path.
+    source_ref: str = ""
+    source_paragraph_index: int = -1
 
 
 class MeasureComponent(BaseModel):
@@ -1755,6 +1760,9 @@ class ComponentNode(BaseModel):
     constraints: list[LayoutConstraint] = Field(default_factory=list)
     payload_ref: str = ""
     renderer_id: str = ""
+    surface_token: str = ""
+    foreground_token: str = ""
+    stroke_token: str = ""
 
 
 class ContentBinding(BaseModel):
@@ -1806,7 +1814,9 @@ class LayoutResolutionResult(BaseModel):
 
     schema_version: str = "1.0"
     status: Literal["resolved", "infeasible", "needs_assets",
-                    "needs_review"] = "needs_review"
+                    "needs_review", "schema_invalid",
+                    "unsupported_representation", "constraint_conflict",
+                    "needs_recompose", "search_exhausted"] = "needs_review"
     resolved_slide: dict[str, Any] = Field(default_factory=dict)
     attempts: list[LayoutAttempt] = Field(default_factory=list)
     addressed_issues: list[str] = Field(default_factory=list)
@@ -2668,3 +2678,52 @@ class OmitDecision(BaseModel):
     authorization_ref: str = ""
     reason: str = ""
     needs_review: bool = False
+
+
+class SpanBinding(BaseModel):
+    """Binding from a source span to a target node."""
+
+    model_config = StrictModel
+
+    source_unit_id: str = ""
+    source_object_id: str | None = None
+    source_subpath: str | None = None
+    source_token_range: tuple[int, int] | None = None
+    target_node_id: str = ""
+    target_token_range: tuple[int, int] | None = None
+    transformation: Literal["exact", "normative_transform",
+                            "semantic_representation"] = "exact"
+    authorization_ref: str | None = None
+
+
+class AuthoredNode(BaseModel):
+    """A node in the authored scene tree."""
+
+    model_config = StrictModel
+
+    node_id: str = ""
+    kind: Literal["rich_text", "image", "table", "chart", "path",
+                  "surface", "container"] = "rich_text"
+    parent_id: str | None = None
+    children: list[str] = Field(default_factory=list)
+    layout_spec: dict[str, Any] = Field(default_factory=dict)
+    text_spec: dict[str, Any] | None = None
+    geometry_spec: dict[str, Any] | None = None
+    surface_spec: dict[str, Any] | None = None
+    semantic_unit_ids: list[str] = Field(default_factory=list)
+    source_bindings: list[SpanBinding] = Field(default_factory=list)
+
+
+class AuthoredScene(BaseModel):
+    """Canonical authored scene for one candidate."""
+
+    model_config = StrictModel
+
+    candidate_key: CandidateKey | None = None
+    concept_sha256: str = ""
+    frame_id: str = ""
+    root_id: str = ""
+    nodes: dict[str, AuthoredNode] = Field(default_factory=dict)
+    bindings: list[SpanBinding] = Field(default_factory=list)
+    relations: list[dict[str, Any]] = Field(default_factory=list)
+    snapshots: dict[str, str] = Field(default_factory=dict)

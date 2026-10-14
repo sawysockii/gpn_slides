@@ -813,7 +813,6 @@ def _advance_stage(state: RunState,
                 if not plan:
                     continue
                 ck = response.request_id
-                # find the concept key for this request
                 key = _key_for_request(state, ck)
                 if key is None:
                     continue
@@ -824,8 +823,53 @@ def _advance_stage(state: RunState,
                 (plan_dir / "plan.json").write_text(
                     json.dumps(plan, ensure_ascii=False, indent=1),
                     encoding="utf-8")
-                state.candidate_states[key] = "scene_validated"
-                written += 1
+
+                from .models import SemanticSlide, VisualConcept
+                from .planner import validate_scene_response
+
+                task = next(
+                    (t for t in state.tasks
+                     if t.request_id == response.request_id), None)
+                semantic_slide = None
+                sem_path = run_dir / "inputs" / "semantic_deck.json"
+                if sem_path.is_file():
+                    with contextlib.suppress(OSError, ValueError):
+                        deck = json.loads(sem_path.read_text(encoding="utf-8"))
+                        for s in deck.get("slides", []):
+                            if s.get("source_slide_id") == sid:
+                                semantic_slide = SemanticSlide.model_validate(s)
+                                break
+
+                visual_concept = None
+                concept_path = (run_dir / "visual_concepts"
+                                / _safe_name(sid) / f"{concept_id}.json")
+                if concept_path.is_file():
+                    with contextlib.suppress(OSError, ValueError):
+                        visual_concept = VisualConcept.model_validate(
+                            json.loads(concept_path.read_text(encoding="utf-8")))
+
+                if task and semantic_slide and visual_concept:
+                    rules_path = run_dir / "compiled_rules.json"
+                    rules = None
+                    if rules_path.is_file():
+                        with contextlib.suppress(OSError, ValueError):
+                            from .models import CompiledOntology
+                            rules = CompiledOntology.model_validate(
+                                json.loads(rules_path.read_text(encoding="utf-8")))
+                    report = validate_scene_response(
+                        response, task, semantic_slide, visual_concept,
+                        rules or CompiledOntology())
+                    if report.valid:
+                        state.candidate_states[key] = "scene_validated"
+                        written += 1
+                    else:
+                        state.candidate_states[key] = "schema_invalid"
+                        findings.append(TypedFinding(
+                            code="SCENE_SCHEMA_INVALID", severity="error",
+                            message=f"{key}: {'; '.join(report.hard_issues[:3])}"))
+                else:
+                    state.candidate_states[key] = "scene_validated"
+                    written += 1
             if written:
                 state.stage = "build"
                 actions.append(ActionRef(
@@ -947,7 +991,7 @@ def _slide_source_objects(run_dir: Path, sid: str) -> list[dict[str, Any]]:
 
 def _scene_generation_task(state: RunState, key: str) -> ModelTask | None:
     """Task: harness authors a LayoutIntent scene plan for one concept."""
-    from .models import CandidateKey  # noqa: PLC0415
+    from .models import CandidateKey, VisualConcept  # noqa: PLC0415
 
     run_dir = Path(state.run_dir)
     concept_id = key.split("/")[-1]
@@ -956,6 +1000,14 @@ def _scene_generation_task(state: RunState, key: str) -> ModelTask | None:
     brief_path = run_dir / "design_briefs" / f"{safe_sid}.json"
     semantic_path = run_dir / "inputs" / "semantic_deck.json"
     slide_objects = _slide_source_objects(run_dir, sid)
+
+    visual_concept: VisualConcept | None = None
+    concept_path = run_dir / "visual_concepts" / f"{safe_sid}" / f"{concept_id}.json"
+    if concept_path.is_file():
+        with contextlib.suppress(OSError, ValueError):
+            visual_concept = VisualConcept.model_validate(
+                json.loads(concept_path.read_text(encoding="utf-8")))
+
     packet_payload = {
         "stage": "scene_generation",
         "slide_id": sid,
@@ -971,6 +1023,8 @@ def _scene_generation_task(state: RunState, key: str) -> ModelTask | None:
                 "to target from_ref/to_ref with evidence source relation "
                 "ids; no invented facts",
     }
+    if visual_concept is not None:
+        packet_payload["visual_concept"] = visual_concept.model_dump()
     if brief_path.is_file():
         with contextlib.suppress(OSError, ValueError):
             packet_payload["design_brief"] = json.loads(

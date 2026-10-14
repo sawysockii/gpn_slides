@@ -295,6 +295,37 @@ def _is_omittable_decor(obj: Any) -> bool:
     return True
 
 
+def _authored_block_paragraphs(
+        refs: list[str],
+        objects: dict[str, Any]) -> list[dict[str, Any]]:
+    """Ordered paragraphs of an authored block, with span provenance.
+
+    Source order is preserved exactly and each paragraph records the source
+    object and paragraph index it came from, so the saved frame can be
+    compared span by span instead of as one merged blob (§3.3).
+    """
+    from .layout import _object_paragraphs  # noqa: PLC0415
+
+    out: list[dict[str, Any]] = []
+    for ref in refs:
+        obj = objects.get(str(ref))
+        if obj is None:
+            continue
+        for idx, para in enumerate(_object_paragraphs(obj)):
+            entry = dict(para)
+            entry["source_ref"] = str(ref)
+            entry["source_paragraph_index"] = idx
+            entry["id"] = f"{ref}:{idx}"
+            runs = []
+            for ridx, run in enumerate(entry.get("runs", []) or []):
+                run = dict(run)
+                run["id"] = f"{ref}:{idx}:{ridx}"
+                runs.append(run)
+            entry["runs"] = runs
+            out.append(entry)
+    return out
+
+
 def emit_slide(
     resolved: ResolvedSlide,
     source_slide: Any,
@@ -340,11 +371,63 @@ def emit_slide(
                 zone_roles[str(ref)] = role
             if any(surface.values()):
                 zone_surface[str(ref)] = surface
+
+    # Authored blocks (§3.3): the writer passes target nodes first. A rich
+    # text block owns several source spans inside one native frame, so its
+    # spans must not also be emitted by the per-source-object loop.
+    authored_blocks: dict[str, dict[str, Any]] = {}
+    for zone in list(resolved.zones or []):
+        refs = (list(zone.get("content_refs", []) or [])
+                if isinstance(zone, dict)
+                else list(getattr(zone, "content_refs", []) or []))
+        zone_id = (str(zone.get("zone_id", "") or "") if isinstance(zone, dict)
+                   else str(getattr(zone, "zone_id", "") or ""))
+        role = (str(zone.get("role", "") or "") if isinstance(zone, dict)
+                else str(getattr(zone, "role", "") or ""))
+        if not zone_id.startswith("zone:") or len(refs) < 2:
+            continue
+        block_id = zone_id[len("zone:"):]
+        box = resolved.geometry_emu.get(block_id)
+        if box is None:
+            continue
+        authored_blocks[block_id] = {
+            "box_emu": box,
+            "role": role,
+            "refs": list(refs),
+            "surface": {
+                "surface_token": str(zone.get("surface_token", "") or "")
+                if isinstance(zone, dict)
+                else str(getattr(zone, "surface_token", "") or ""),
+                "foreground_token": str(zone.get("foreground_token", "") or "")
+                if isinstance(zone, dict)
+                else str(getattr(zone, "foreground_token", "") or ""),
+                "stroke_token": str(zone.get("stroke_token", "") or "")
+                if isinstance(zone, dict)
+                else str(getattr(zone, "stroke_token", "") or ""),
+            },
+        }
+    merged_refs: set[str] = set()
+    for block_id, block in authored_blocks.items():
+        merged_refs.update(str(r) for r in block["refs"])
+        paragraphs = _authored_block_paragraphs(
+            block["refs"], {o.id: o for o in source_slide.objects})
+        if not paragraphs:
+            continue
+        _native.emit_rich_text_block(
+            paragraphs, block["box_emu"], output_slide, context,
+            role=block["role"], rules=rules, node_id=block_id,
+            surface_tokens=block["surface"],
+            slide_position=output_position)
+
     ordered = sorted(source_slide.objects, key=lambda o: (o.z_order, o.id))
     connectors: list[dict[str, Any]] = []
     id_map: dict[str, int] = {}
     by_shapeid = {f"shapeid:{o.source_ref.shape_id}": o.id for o in ordered}
     for obj in ordered:
+        if obj.id in merged_refs:
+            # Already emitted as part of an authored block; emitting again
+            # would duplicate the span (and read as a content conflict).
+            continue
         box = resolved.geometry_emu.get(obj.id)
         if box is None:
             # Stage 7 §6.2: omit only by authorizing decision for this

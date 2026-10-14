@@ -30,6 +30,63 @@ def _pct_to_pt(zone: Any, content_box_pt: dict[str, float]) -> dict[str, float]:
     }
 
 
+def _object_paragraphs(obj: Any) -> list[Any]:
+    """Paragraphs of a text object or text-bearing shape, or [].
+
+    Mirrors the reader's payload layout (``payload.paragraphs`` for text,
+    ``payload.text.paragraphs`` for shapes) so rich-text grouping never
+    guesses about a payload that carries no text.
+    """
+    payload = getattr(obj, "payload", None)
+    if payload is None:
+        return []
+    paragraphs = getattr(payload, "paragraphs", None)
+    if paragraphs is None:
+        inner = getattr(payload, "text", None)
+        paragraphs = getattr(inner, "paragraphs", None) if inner else None
+    return list(paragraphs or [])
+
+
+def _stroke_width_pt(obj: Any) -> float:
+    """Saved stroke width in Pt; 1.0 when the source declares none."""
+    payload = getattr(obj, "payload", None)
+    line = getattr(payload, "source_line", None) if payload is not None else None
+    emu = getattr(line, "width_emu", None) if line is not None else None
+    if emu:
+        try:
+            return max(float(emu) / 12700.0, 0.1)
+        except (TypeError, ValueError):
+            pass
+    return 1.0
+
+
+def _is_stroked_path(obj: Any) -> bool:
+    """True when the source object is a stroked path, not a filled area.
+
+    Evidence from the saved IR, not a guess from the kind: a preset
+    ``line`` geometry, or a text-less shape whose source box has zero
+    height but real width (a horizontal rule). Such an object paints only
+    its stroke envelope and must never reserve a body-text slot (§4.2).
+    """
+    payload = getattr(obj, "payload", None)
+    if payload is None or _object_paragraphs(obj):
+        return False
+    token = str(getattr(payload, "geometry_token", "") or "").lower()
+    if token in ("line", "straightconnector1", "bentconnector"):
+        return True
+    if token:
+        return False
+    box = getattr(obj, "local_box", None)
+    if box is None:
+        return False
+    try:
+        height = float(getattr(box, "h", 0) or 0)
+        width = float(getattr(box, "w", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    return height <= 1.0 and width > 0.0
+
+
 def _infer_organization(zones: list[Any]) -> str:
     """Infer zone organization from pct geometry (deterministic rules)."""
     if len(zones) <= 1:
@@ -458,11 +515,15 @@ def compile_composition(
             issues.append(f"STYLE_ROLE_UNBOUND: no ontology role for object "
                           f"{ref} (zone={zone_role!r} payload={payload_role!r})")
         kind = str(getattr(obj, "kind", "text") or "text")
+        is_connector = kind == "connector" or _is_stroked_path(obj)
+        node_kind = "connector" if is_connector else (
+            kind if kind in (
+                "text", "table", "chart", "shape", "group", "image",
+                "connector") else "shape"
+        )
         node = ComponentNode(
             id=f"c-{ref[:8]}",
-            kind=kind if kind in (
-                "text", "table", "chart", "shape", "group", "image",
-                "connector") else "shape",
+            kind=node_kind,
             content_refs=[ref],
             style_role=style_role,
             children=[],
@@ -479,6 +540,19 @@ def compile_composition(
             payload_ref=ref,
             renderer_id="native",
         )
+        if is_connector:
+            # Stroke envelope comes from the saved line evidence, not from
+            # a guessed minimum body height (§4.2).
+            node.constraints.append(LayoutConstraint(
+                id=f"stroke-footprint-{ref[:8]}",
+                kind="stroke_footprint",
+                target_ids=[node.id],
+                value={"stroke_width_pt": _stroke_width_pt(obj),
+                       "is_line": True},
+                strength="hard",
+                origin="source",
+                evidence_refs=[f"source_line:{ref}"],
+            ))
         # Primary representation: one component per required occurrence.
         representation = "primary"
         if ref in seen_atoms:
@@ -495,6 +569,79 @@ def compile_composition(
             representation=representation,  # type: ignore[arg-type]
             permission_ref="intent:repeat" if representation == "authorized_repeat" else "",
         ))
+
+    # Group text-bearing objects by zone for rich text assembly (§3.2).
+    # Grouping is by accepted authored zone, never by source object count.
+    zone_text_groups: dict[str, list[str]] = {}
+    zone_order: list[str] = []
+    for ref in content_refs:
+        obj = objects.get(ref)
+        if obj is None:
+            continue
+        kind = str(getattr(obj, "kind", "text") or "text")
+        if kind not in ("text", "shape"):
+            continue
+        payload = getattr(obj, "payload", None)
+        if payload is None or not _object_paragraphs(obj):
+            continue
+        zone = zone_by_ref.get(ref)
+        if zone:
+            zid = zone.zone_id
+            if zid not in zone_text_groups:
+                zone_text_groups[zid] = []
+                zone_order.append(zid)
+            zone_text_groups[zid].append(ref)
+
+    # Create rich text blocks for zones with multiple text objects
+    rich_text_nodes: dict[str, ComponentNode] = {}
+    for zid in zone_order:
+        refs = zone_text_groups[zid]
+        if len(refs) <= 1:
+            continue
+        node_id = f"rt-{zid}"
+        zone = zone_by_ref.get(refs[0])
+        zone_role = str(getattr(zone, "role", "") or "") if zone else ""
+        node = ComponentNode(
+            id=node_id,
+            kind="rich_text",
+            content_refs=refs,
+            style_role=zone_role,
+            children=[],
+            organization="leaf",
+            constraints=([LayoutConstraint(
+                id=f"hint-{zid}",
+                kind="relative_box",
+                target_ids=[node_id],
+                value=_pct_to_pt(zone, content_box_pt) if zone else {},
+                strength="soft",
+                origin="intent",
+                evidence_refs=[f"zone:{zid}"] if zone else [],
+            )] if zone else []),
+            payload_ref="",
+            renderer_id="native",
+        )
+        if zone:
+            for token_field in ("surface_token", "foreground_token", "stroke_token"):
+                token = getattr(zone, token_field, "")
+                if token:
+                    setattr(node, token_field, token)
+        rich_text_nodes[node_id] = node
+        components[node_id] = node
+        for ref in refs:
+            bindings.append(ContentBinding(
+                component_id=node_id,
+                source_object_id=ref,
+                representation="primary",
+            ))
+
+    # Remove individual text nodes that were merged into rich text blocks
+    merged_refs = set()
+    for node in rich_text_nodes.values():
+        merged_refs.update(node.content_refs)
+    for ref in list(merged_refs):
+        node_id = f"c-{ref[:8]}"
+        if node_id in components:
+            del components[node_id]
 
     organization = _infer_organization(
         list(getattr(intent, "zones", []) or []))

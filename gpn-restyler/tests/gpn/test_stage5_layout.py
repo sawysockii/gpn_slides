@@ -249,7 +249,8 @@ def test_no_hidden_font_shrink(tmp_path: Path) -> None:
     measurer = _measurer()
     res = resolve_layout(tree, slide, ledger, _rules(), tiny,
                          _bundle(), measurer, _options(tmp_path))
-    assert res.status == "infeasible"
+    assert res.status in ("needs_recompose", "search_exhausted",
+                          "constraint_conflict")
     role_size = _rules().roles["body"].default_size_pt
     for seen in measurer.seen:
         for comp in seen["components"]:
@@ -273,10 +274,12 @@ def test_preserve_overload_infeasible(tmp_path: Path) -> None:
     tree = compile_composition(intent, slide, ledger, _rules(), tiny)
     res = resolve_layout(tree, slide, ledger, _rules(), tiny,
                          _bundle(), _measurer(), _options(tmp_path))
-    assert res.status == "infeasible"
+    assert res.status in ("needs_recompose", "search_exhausted",
+                          "constraint_conflict")
     assert res.resolved_slide == {}
-    assert any("INFEASIBLE" in u for u in res.unresolved)
-    assert any("budget" in u for u in res.unresolved)
+    assert any("needs_recompose" in u or "search_exhausted" in u
+               or "constraint_conflict" in u for u in res.unresolved)
+    assert any("attempts consumed" in u for u in res.unresolved)
 
 
 def test_global_attempt_budget(tmp_path: Path) -> None:
@@ -304,7 +307,7 @@ def test_global_attempt_budget(tmp_path: Path) -> None:
                          _measurer(),
                          _options(tmp_path, budget_tracker={"consumed": 7,
                                                             "max_total": 7}))
-    assert res.status == "infeasible"
+    assert res.status == "search_exhausted"
     assert any("BUDGET_EXHAUSTED" in u for u in res.unresolved)
     assert res.attempts == []
 
@@ -458,5 +461,5 @@ def test_overlap_relation_is_scoped(tmp_path: Path) -> None:
     res3 = resolve_layout(tree3, slide, ledger, _rules(), flat,
                           _bundle(), _measurer(),
                           _options(tmp_path, layout_mode="recompose"))
-    assert res3.status == "infeasible", res3.unresolved
-    assert any("INFEASIBLE_OVERLAP" in u for u in res3.unresolved)
+    assert res3.status == "constraint_conflict", res3.unresolved
+    assert any("overlap_unresolved" in u for u in res3.unresolved)

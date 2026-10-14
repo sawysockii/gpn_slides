@@ -183,6 +183,33 @@ def _object_paragraphs(obj: Any) -> list[dict[str, Any]]:
     return out
 
 
+def _rich_text_paragraphs(
+        objects: dict[str, Any],
+        refs: list[str]) -> list[dict[str, Any]]:
+    """Paragraphs of one authored block assembled from several source spans.
+
+    Source order is preserved exactly; each paragraph keeps its own source
+    ref so the native writer can address individual bound spans (§3.2).
+    No text is concatenated across objects without a paragraph boundary.
+    """
+    out: list[dict[str, Any]] = []
+    for ref in refs:
+        obj = objects.get(ref)
+        if obj is None:
+            continue
+        for idx, para in enumerate(_object_paragraphs(obj)):
+            para = dict(para)
+            para["source_ref"] = ref
+            para["source_paragraph_index"] = idx
+            para["id"] = f"{ref}:{idx}"
+            for ridx, run in enumerate(para["runs"]):
+                run = dict(run)
+                run["id"] = f"{ref}:{idx}:{ridx}"
+                para["runs"][ridx] = run
+            out.append(para)
+    return out
+
+
 def _source_box_pt(obj: Any, floor: float = 1.0) -> dict[str, float] | None:
     """Source local box in Pt, or None when the object has no saved box."""
     from .units import emu_to_pt
@@ -230,22 +257,108 @@ def _boxes_overlap(a: dict[str, float], b: dict[str, float],
             and b["y"] < a["y"] + a["h"] - slop)
 
 
+def place_side_by_side(
+        box: dict[str, float],
+        blockers: list[tuple[str, dict[str, float]]],
+        content_box: dict[str, float],
+        allowed: set[frozenset]) -> dict[str, float] | None:
+    """Legal alternative placement when nothing fits below (spec §1.3).
+
+    The downward-only helper cannot fit two 100x100 objects in a 400x100
+    region, yet a row placement trivially fits. This searches free space
+    beside/under the blockers in both axes and returns the first placement
+    that is inside the content box and collides with nothing. It returns
+    ``None`` only when no such legal placement exists — which is a scoped
+    conflict, not a statement about how much text the slide contains.
+    """
+    def _free(candidate: dict[str, float]) -> bool:
+        if (candidate["x"] < content_box["x"] - 0.75
+                or candidate["y"] < content_box["y"] - 0.75
+                or candidate["x"] + candidate["w"]
+                > content_box["x"] + content_box["w"] + 0.75
+                or candidate["y"] + candidate["h"]
+                > content_box["y"] + content_box["h"] + 0.75):
+            return False
+        return not any(_boxes_overlap(candidate, other)
+                       for _, other in blockers)
+
+    gap = 7.2
+    candidates: list[dict[str, float]] = []
+    # Beside each blocker (left and right edges), then aligned to its top.
+    for _, other in blockers:
+        candidates.append({"x": other["x"] - gap - box["w"],
+                           "y": box["y"], "w": box["w"], "h": box["h"]})
+        candidates.append({"x": other["x"] + other["w"] + gap,
+                           "y": box["y"], "w": box["w"], "h": box["h"]})
+        candidates.append({"x": other["x"], "y": box["y"],
+                           "w": box["w"], "h": box["h"]})
+        candidates.append({"x": box["x"], "y": other["y"] + other["h"] + gap,
+                           "w": box["w"], "h": box["h"]})
+        candidates.append({"x": box["x"], "y": other["y"] - gap - box["h"],
+                           "w": box["w"], "h": box["h"]})
+    # Region corners: translation only, the box keeps its measured size.
+    candidates.append({"x": content_box["x"], "y": box["y"],
+                       "w": box["w"], "h": box["h"]})
+    candidates.append({"x": content_box["x"] + content_box["w"] - box["w"],
+                       "y": box["y"], "w": box["w"], "h": box["h"]})
+    for candidate in candidates:
+        if _free(candidate):
+            return candidate
+    return None
+
+
+def _stroke_width_pt(node: Any) -> float:
+    """Declared stroke width for a path node (Pt), else 1.0."""
+    for c in getattr(node, "constraints", []) or []:
+        if getattr(c, "kind", "") == "stroke_footprint":
+            value = getattr(c, "value", None)
+            if isinstance(value, dict):
+                try:
+                    return max(float(value.get("stroke_width_pt", 1.0)), 0.1)
+                except (TypeError, ValueError):
+                    return 1.0
+    return 1.0
+
+
+def _stroke_widths_pt(tree: Any) -> dict[str, float]:
+    """Per-component stroke widths for the path nodes of a tree."""
+    return {cid: _stroke_width_pt(node)
+            for cid, node in getattr(tree, "components", {}).items()
+            if getattr(node, "kind", "") == "connector"}
+
+
 def _resolve_hint_overlaps(
         boxes: dict[str, dict[str, float]], order: list[str],
         content_box: dict[str, float],
         allowed: set[frozenset] | None = None,
         obstacles: dict[str, dict[str, float]] | None = None,
-) -> tuple[dict[str, dict[str, float]], list[dict[str, Any]]]:
+        node_kinds: dict[str, str] | None = None,
+        stroke_widths: dict[str, float] | None = None,
+        ) -> tuple[dict[str, dict[str, float]], list[dict[str, Any]]]:
     """Deterministic overlap repair: later boxes shift below earlier ones.
 
     Bounded and recorded; when a shift would leave the content box the
     pair is reported, never silently stacked out of view. Exact-pair
     ``allowed`` container allowances (nest) are never moved apart.
+    Connectors (lines) use their declared stroke footprint, not the
+    authored zone height.
     """
     allowed = allowed or set()
     obstacles = obstacles or {}
+    node_kinds = node_kinds or {}
+    stroke_widths = stroke_widths or {}
     moves: list[dict[str, Any]] = []
     bottom = content_box["y"] + content_box["h"]
+
+    def _is_connector(cid: str) -> bool:
+        return node_kinds.get(cid) == "connector"
+
+    def _effective_height(cid: str, box: dict[str, float]) -> float:
+        if _is_connector(cid):
+            # Footprint is the stroke envelope around the zero-height
+            # centerline, never the authored body slot (§4.2).
+            return stroke_widths.get(cid, 1.0)
+        return box["h"]
 
     def _shift(cid: str, box: dict[str, float],
                blockers: list[tuple[str, dict[str, float]]]) -> dict[str, float]:
@@ -255,11 +368,29 @@ def _resolve_hint_overlaps(
             guard = 0
             while _boxes_overlap(box, other) and guard < 50:
                 guard += 1
-                new_y = other["y"] + other["h"] + 7.2
-                if new_y + box["h"] > bottom + 0.75:
+                other_h = _effective_height(prev, other)
+                new_y = other["y"] + other_h + 7.2
+                box_h = _effective_height(cid, box)
+                if new_y + box_h > bottom + 0.75:
+                    # Downward repair failed for this pair. Before giving
+                    # up, search free space in both axes (spec §1.3): a
+                    # row placement may exist where no room is below.
+                    alt = place_side_by_side(
+                        box, list(blockers), content_box, allowed)
+                    if alt is not None and frozenset((cid, prev)) not in allowed:
+                        moves.append({"action": "reorient",
+                                      "target": cid, "obstacle": prev,
+                                      "result": "placed_beside",
+                                      "from_x": round(box["x"], 2),
+                                      "to_x": round(alt["x"], 2),
+                                      "from_y": round(box["y"], 2),
+                                      "to_y": round(alt["y"], 2)})
+                        box = alt
+                        break
                     moves.append({"action": "resolve_overlap",
                                   "target": cid, "obstacle": prev,
-                                  "result": "no_room_below"})
+                                  "result": "no_room_below",
+                                  "directional_search_only": True})
                     break
                 moves.append({"action": "resolve_overlap", "target": cid,
                               "obstacle": prev,
@@ -272,7 +403,7 @@ def _resolve_hint_overlaps(
         box = boxes[cid]
         box = _shift(cid, box, [(prev, boxes[prev]) for prev in order[:pos]])
         box = _shift(cid, box, sorted(obstacles.items(),
-                                      key=lambda kv: kv[1]["y"]))
+                                       key=lambda kv: kv[1]["y"]))
         boxes[cid] = box
     return boxes, moves
 
@@ -357,7 +488,11 @@ def _build_geometry_emu(tree: Any, current_boxes: dict[str, dict[str, float]],
     geometry_emu: dict[str, dict[str, int]] = {}
     for cid, node in tree.components.items():
         box = current_boxes.get(cid, _hint_box(node, content_box))
-        geometry_emu[node.payload_ref] = {
+        # Authored blocks have no single payload ref: their geometry is
+        # addressed by the authored component id and consumed by the native
+        # writer (emit_scene), not by the per-source-object loop (§3.3).
+        key = node.payload_ref or cid
+        geometry_emu[key] = {
             "x": pt_to_emu_fn(box["x"]),
             "y": pt_to_emu_fn(box["y"]),
             "w": pt_to_emu_fn(box["w"]),
@@ -372,15 +507,25 @@ def _build_resolved_slide(tree: Any, options: dict[str, Any],
                            passthrough_refs: list[str] | None = None,
                            table_layout_emu: dict[str, dict[str, list[int]]] | None = None,
                            ) -> dict[str, Any]:
+    zones = []
+    for cid, node in tree.components.items():
+        zone: dict[str, Any] = {
+            "zone_id": f"zone:{cid}",
+            "role": node.style_role,
+            "content_refs": node.content_refs,
+        }
+        for token_field in ("surface_token", "foreground_token", "stroke_token"):
+            token = getattr(node, token_field, "")
+            if token:
+                zone[token_field] = token
+        zones.append(zone)
     return {
         "slide_id": tree.slide_id,
         "source_slide_id": tree.slide_id,
         "intent_id": tree.candidate_id,
         "generation_origin": options.get("generation_origin",
-                                          "harness_model"),
-        "zones": [{"zone_id": f"zone:{cid}", "role": node.style_role,
-                   "content_refs": node.content_refs}
-                  for cid, node in tree.components.items()],
+                                           "harness_model"),
+        "zones": zones,
         "role_assignments": {f"zone:{cid}": node.style_role
                              for cid, node in tree.components.items()},
         "geometry_emu": geometry_emu,
@@ -423,9 +568,10 @@ def resolve_layout(
         total = int(tracker.get("max_total", max_attempts))
         if spent >= total:
             return LayoutResolutionResult(
-                status="infeasible", attempts=[],
-                unresolved=[f"BUDGET_EXHAUSTED: per-slide budget "
-                            f"{spent}/{total} consumed across candidates; "
+                status="search_exhausted", attempts=[],
+                unresolved=[f"BUDGET_EXHAUSTED: search_exhausted: "
+                            f"{spent}/{total} attempts consumed across "
+                            "candidates; termination=budget_spent; "
                             "new candidate_id does not reset it"],
                 measurement_profile=profile_kind, evidence_hashes={})
 
@@ -453,9 +599,23 @@ def resolve_layout(
     # and images carry no runs and take no text style.
     objects = {o.id: o for o in (getattr(source_slide, "objects", []) or [])}
     run_styles: dict[str, dict[str, Any]] = {}
+    rich_text_cids: dict[str, list[str]] = {}
     needs_assets = False
     for cid, node in tree.components.items():
         obj = objects.get(node.payload_ref)
+        if node.kind == "rich_text":
+            # Authored block: one frame, one resolved role. The block style
+            # is resolved once from the role, never per source object (§3.2/5.2).
+            rich_text_cids[cid] = list(node.content_refs)
+            try:
+                run_styles[cid] = resolve_component_style(
+                    node.style_role, rules, font_bundle)
+            except ValueError as exc:
+                msg = str(exc)
+                unresolved.append(f"{cid}: {msg}")
+                if "UNBOUND" in msg and "FACE" in msg:
+                    needs_assets = True
+            continue
         carries_text = node.kind in ("text",) or (
             node.kind == "shape" and bool(_object_paragraphs(obj))
             if obj is not None else node.kind == "shape")
@@ -605,6 +765,31 @@ def resolve_layout(
         return True
 
     for cid, node in tree.components.items():
+        if node.kind == "rich_text":
+            # Authored block: several source spans measured as one native
+            # frame with real paragraph boundaries (§3.2). Frame padding is
+            # paid once for the authored block, not once per source object.
+            paras = _rich_text_paragraphs(objects, list(node.content_refs))
+            if not paras:
+                unresolved.append(f"RICH_TEXT_EMPTY: {cid}")
+                continue
+            hint = _clamp_box(_hint_box(node, content_box), content_box)
+            style = run_styles.get(cid)
+            if style is None:
+                unresolved.append(f"STYLE_UNRESOLVED: {cid}")
+                continue
+            for para in paras:
+                for run in para["runs"]:
+                    run["style"] = dict(style)
+            comp = MeasureComponent(
+                id=cid, kind="text", payload_ref=node.content_refs[0],
+                paragraphs=paras, box_pt=dict(hint),
+                margins_pt={"l": 7.2, "r": 7.2, "t": 3.6, "b": 3.6},
+                vertical_anchor="top", wrap_policy="wrap",
+                rotation_deg=0.0, list_preview={})
+            components[cid] = comp
+            preserve_boxes[cid] = dict(hint)
+            continue
         obj = objects.get(node.payload_ref)
         if obj is None:
             unresolved.append(f"OBJECT_GONE: {node.payload_ref}")
@@ -890,7 +1075,10 @@ def resolve_layout(
                      "assigned_h": round(need, 2)})
                 y += need + 7.2
         alloc_boxes, repair_moves = _resolve_hint_overlaps(
-            alloc_boxes, movables, content_box, allowed_cids, obstacles)
+            alloc_boxes, movables, content_box, allowed_cids, obstacles,
+            node_kinds={cid: tree.components[cid].kind
+                        for cid in child_ids if cid in tree.components},
+            stroke_widths=_stroke_widths_pt(tree))
         overlap_moves.extend(repair_moves)
         if any(m.get("result") == "no_room_below" for m in overlap_moves):
             no_room = sorted({str(m.get("target")) for m in overlap_moves
@@ -1134,28 +1322,36 @@ def resolve_layout(
 
     if hard_issues:
         deficits = "; ".join(hard_issues[:6])
+        termination = (
+            f"search_exhausted: {consumed} attempts consumed, "
+            f"termination=measurement_failure"
+            if consumed >= max_attempts
+            else f"needs_recompose: {consumed} attempts consumed, "
+                 f"termination={hard_issues[0]}"
+        )
         return LayoutResolutionResult(
-            status="infeasible", attempts=attempts,
+            status="needs_recompose" if consumed < max_attempts else "search_exhausted",
+            attempts=attempts,
             unresolved=[*unresolved,
-                        f"INFEASIBLE: {deficits} "
-                        f"(budget {consumed}/{max_attempts} exhausted; "
-                        "content/styles/count unchanged)"],
+                        f"{termination}: {deficits}"],
             measurement_profile=profile_kind,
             evidence_hashes={"tree": hashlib.sha256(
                 tree.model_dump_json().encode()).hexdigest()})
 
-    # Final gate: residual non-allowed overlaps fail the allocation even
-    # when every box measured clean — repair is best-effort, the gate is
-    # exact (§11.1). Recompose refuses overlaps.
     residual = _residual_overlaps(current_boxes) if current_boxes else []
     if residual:
         pairs = "; ".join(f"{a}+{b}" for a, b in residual[:6])
+        termination = (
+            f"search_exhausted: {consumed} attempts consumed, "
+            f"termination=overlap_unresolved"
+            if consumed >= max_attempts
+            else f"constraint_conflict: {consumed} attempts consumed, "
+                 f"termination=overlap_unresolved"
+        )
         return LayoutResolutionResult(
-            status="infeasible", attempts=attempts,
-            unresolved=[*unresolved,
-                        f"INFEASIBLE_OVERLAP: {pairs} "
-                        f"(budget {consumed}/{max_attempts} exhausted; "
-                        "content/styles/count unchanged)"],
+            status="constraint_conflict",
+            attempts=attempts,
+            unresolved=[*unresolved, f"{termination}: {pairs}"],
             measurement_profile=profile_kind,
             evidence_hashes={"tree": hashlib.sha256(
                 tree.model_dump_json().encode()).hexdigest()})
