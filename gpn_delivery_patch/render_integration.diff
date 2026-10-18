@@ -1,0 +1,59 @@
+--- render.payload.py	2026-10-18 13:12:13
++++ /Users/wysockii/Documents/gpn_slides/gpn-restyler/src/slides_cli/gpn/render.py	2026-10-18 13:12:52
+@@ -625,3 +625,56 @@
+             }
+         )
+     return out
++
++
++# ---------------------------------------------------------------------------
++# source deck render (input surface for the model)
++# ---------------------------------------------------------------------------
++
++
++def render_source_deck(
++    source_path: str | Path,
++    out_dir: str | Path,
++    expected_page_count: int = 0,
++    dpi: int = 110,
++    timeout: float = 300.0,
++) -> NativeRenderProbe:
++    """Render the ORIGINAL deck so the model sees the actual source layout.
++
++    ``render_native_candidate`` is a verdict about a candidate; this is the
++    same renderer used as an *input* surface. The native PDF is published as
++    ``source.pdf`` and the page images as ``slide-N.png``. Returns the probe
++    with candidate_hash/pdf_path/page_images populated; ``result`` is the
++    render verdict, and the caller decides what to do with it.
++
++    Hidden slides ARE exported (impress_pdf_Export ExportHiddenSlides), so
++    ``expected_page_count`` must count every slide of the deck. show/hidden
++    flags of the source PPTX are never modified by this call.
++    """
++    probe = render_native_candidate(
++        source_path,
++        options={
++            "output_dir": str(out_dir),
++            "dpi": dpi,
++            "timeout_seconds": timeout,
++            "expected_page_count": expected_page_count,
++        },
++    )
++    if not probe.pdf_path:
++        return probe
++    produced = Path(probe.pdf_path)
++    target = produced.with_name("source.pdf")
++    if produced.name != target.name:
++        produced.replace(target)
++        probe.pdf_path = str(target)
++    renamed: list[str] = []
++    for image in probe.page_images:
++        page = Path(image)
++        if page.name.startswith("page-"):
++            slide = page.with_name("slide-" + page.name[len("page-") :])
++            page.replace(slide)
++            renamed.append(str(slide))
++        else:
++            renamed.append(image)
++    probe.page_images = renamed
++    return probe

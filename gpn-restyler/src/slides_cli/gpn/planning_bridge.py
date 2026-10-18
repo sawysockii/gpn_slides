@@ -28,6 +28,24 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..model import OperationBatch, SetShapeGeometryOp, SetShapeStyleOp
 from .errors import GpnError, UnsupportedIntentError
+from .frame_contract import (
+    _derive_content_box as _derive_content_box,
+)
+from .frame_contract import (
+    _get as _get,
+)
+from .frame_contract import (
+    _layout_profiles as _layout_profiles,
+)
+from .frame_contract import (
+    _pt_to_emu as _pt_to_emu,
+)
+from .frame_contract import (
+    _pt_to_in as _pt_to_in,
+)
+from .frame_contract import (
+    _resolve_content_box as _resolve_content_box,
+)
 from .models import CompiledOntology, SlideIR, SourceLedger
 from .patching import GpnEditContext, apply_gpn_edits, preflight_gpn_edits
 from .planner import LayoutIntent
@@ -110,45 +128,49 @@ def resolve_diagnostic_layout(
     resolved_styles: list[dict[str, Any]] = []
 
     for zone in intent.zones:
-        zones.append({
-            "zone_id": zone.zone_id,
-            "x_pct": zone.x_pct,
-            "y_pct": zone.y_pct,
-            "w_pct": zone.w_pct,
-            "h_pct": zone.h_pct,
-            "role": zone.role,
-            "content_refs": list(zone.content_refs),
-            # §5.3: declared surface contract travels with the zone so
-            # the emitter resolves palette tokens (never literal RGB).
-            "surface_token": zone.surface_token,
-            "foreground_token": zone.foreground_token,
-            "stroke_token": zone.stroke_token,
-        })
+        zones.append(
+            {
+                "zone_id": zone.zone_id,
+                "x_pct": zone.x_pct,
+                "y_pct": zone.y_pct,
+                "w_pct": zone.w_pct,
+                "h_pct": zone.h_pct,
+                "role": zone.role,
+                "content_refs": list(zone.content_refs),
+                # §5.3: declared surface contract travels with the zone so
+                # the emitter resolves palette tokens (never literal RGB).
+                "surface_token": zone.surface_token,
+                "foreground_token": zone.foreground_token,
+                "stroke_token": zone.stroke_token,
+            }
+        )
 
         for ref in zone.content_refs:
             binding = _find_source_binding(ref, source_slide)
             if binding is None:
                 issues.append(f"content ref {ref!r} not found in source slide")
                 continue
-            source_bindings.append({
-                "ref": ref,
-                "zone_id": zone.zone_id,
-                "shape_id": binding.get("shape_id"),
-                "group_path": list(binding.get("group_path") or []),
-                "slide_index": binding.get("slide_index", 0),
-            })
+            source_bindings.append(
+                {
+                    "ref": ref,
+                    "zone_id": zone.zone_id,
+                    "shape_id": binding.get("shape_id"),
+                    "group_path": list(binding.get("group_path") or []),
+                    "slide_index": binding.get("slide_index", 0),
+                }
+            )
             if zone.role:
                 style = _resolve_role_style(zone.role, rules)
                 if style is None:
-                    issues.append(
-                        f"style_role {zone.role!r} could not be resolved for ref {ref!r}"
-                    )
+                    issues.append(f"style_role {zone.role!r} could not be resolved for ref {ref!r}")
                 else:
-                    resolved_styles.append({
-                        "ref": ref,
-                        "role": zone.role,
-                        "style": style,
-                    })
+                    resolved_styles.append(
+                        {
+                            "ref": ref,
+                            "role": zone.role,
+                            "style": style,
+                        }
+                    )
 
     if not capabilities.get("implemented_operators"):
         issues.append("no implemented operators declared in capabilities")
@@ -227,12 +249,14 @@ def lower_intent_to_patch_batch(
             height=h_in,
         )
         operations.append(geometry.model_dump(mode="json"))
-        intent_to_op_map.append({
-            "ref": binding["ref"],
-            "zone_id": zone_id,
-            "op_index": len(operations) - 1,
-            "op_type": "set_shape_geometry",
-        })
+        intent_to_op_map.append(
+            {
+                "ref": binding["ref"],
+                "zone_id": zone_id,
+                "op_index": len(operations) - 1,
+                "op_type": "set_shape_geometry",
+            }
+        )
 
         style_entry = next(
             (s for s in resolved.resolved_styles if s["ref"] == binding["ref"]),
@@ -247,12 +271,14 @@ def lower_intent_to_patch_batch(
                 style=style_entry["style"],
             )
             operations.append(style_op.model_dump(mode="json"))
-            intent_to_op_map.append({
-                "ref": binding["ref"],
-                "zone_id": zone_id,
-                "op_index": len(operations) - 1,
-                "op_type": "set_shape_style",
-            })
+            intent_to_op_map.append(
+                {
+                    "ref": binding["ref"],
+                    "zone_id": zone_id,
+                    "op_index": len(operations) - 1,
+                    "op_type": "set_shape_style",
+                }
+            )
 
     if not operations:
         issues.append("no operations generated from intent")
@@ -269,11 +295,13 @@ def lower_intent_to_patch_batch(
     return IntentPatchProposal(
         operation_batch={"operations": operations},
         intent_to_operation_map=intent_to_op_map,
-        authorizations=[{
-            "edit_scope": edit_context.edit_scope,
-            "test_only": edit_context.test_only,
-            "policy": "stage3 authorize_gpn_edit applied during preflight",
-        }],
+        authorizations=[
+            {
+                "edit_scope": edit_context.edit_scope,
+                "test_only": edit_context.test_only,
+                "policy": "stage3 authorize_gpn_edit applied during preflight",
+            }
+        ],
         expected_source_hash=expected_source_hash,
         issues=issues,
     )
@@ -338,137 +366,6 @@ def apply_diagnostic_intent(
         strict_output_ready=False,
         visual_validated=False,
     )
-
-
-def _resolve_content_box(
-    profile: Any, rules: CompiledOntology
-) -> tuple[dict[str, float], bool, str, list[str]]:
-    """Resolve the content box in inches from the template profile.
-
-    Sources, in order:
-    1. explicit ``{"content_box": ..., "verified": true, "source": ...}``
-       dictionary (diagnostic fixtures may declare a verified test template);
-    2. ``layout_profiles[].content_box`` of a TemplateProfile (points → in);
-    3. derived box from canvas + protected regions via the existing
-       template algorithm (unverified unless layout evidence is present).
-    """
-    issues: list[str] = []
-
-    if profile is None:
-        return {}, False, "", issues
-
-    if isinstance(profile, dict) and profile.get("content_box"):
-        raw = profile["content_box"]
-        unit = str(profile.get("unit", "in")).lower()
-        try:
-            if unit == "emu":
-                box = {
-                    "x": float(raw["x"]) / EMU_PER_INCH,
-                    "y": float(raw["y"]) / EMU_PER_INCH,
-                    "w": float(raw["w"]) / EMU_PER_INCH,
-                    "h": float(raw["h"]) / EMU_PER_INCH,
-                }
-            elif unit == "pt":
-                box = {
-                    "x": float(raw["x"]) / PT_PER_INCH,
-                    "y": float(raw["y"]) / PT_PER_INCH,
-                    "w": float(raw["w"]) / PT_PER_INCH,
-                    "h": float(raw["h"]) / PT_PER_INCH,
-                }
-            else:
-                box = {k: float(raw[k]) for k in ("x", "y", "w", "h")}
-        except (KeyError, TypeError, ValueError):
-            issues.append("explicit content_box is malformed; ignored")
-            return {}, False, "", issues
-        verified = bool(profile.get("verified", False))
-        source = str(profile.get("source", "explicit_test_template"))
-        if not verified:
-            issues.append("explicit content_box not marked verified")
-        return box, verified, source, issues
-
-    layouts = _layout_profiles(profile)
-    for layout in layouts:
-        box_raw = _get(layout, "content_box")
-        if not box_raw:
-            continue
-        box = {
-            "x": _pt_to_in(_get(box_raw, "x")),
-            "y": _pt_to_in(_get(box_raw, "y")),
-            "w": _pt_to_in(_get(box_raw, "w")),
-            "h": _pt_to_in(_get(box_raw, "h")),
-        }
-        verified = bool(_get(layout, "is_verified", False))
-        source = f"layout_content_box:{_get(layout, 'id', '')}"
-        return box, verified, source, issues
-
-    derived = _derive_content_box(profile, rules, issues)
-    if derived is not None:
-        return derived
-    return {}, False, "", issues
-
-
-def _derive_content_box(
-    profile: Any, rules: CompiledOntology, issues: list[str]
-) -> tuple[dict[str, float], bool, str, list[str]] | None:
-    from .models import RectEMU
-    from .template import compute_content_box
-
-    protected: list[Any] = []
-    evidence: list[str] = []
-    for layout in _layout_profiles(profile):
-        for region in (_get(layout, "protected_regions") or []):
-            protected.append(RectEMU(
-                x=int(_pt_to_emu(_get(region, "x"))),
-                y=int(_pt_to_emu(_get(region, "y"))),
-                w=int(_pt_to_emu(_get(region, "w"))),
-                h=int(_pt_to_emu(_get(region, "h"))),
-            ))
-        evidence.extend(str(e) for e in (_get(layout, "evidence") or []))
-
-    # Pass layout evidence so compute_content_box can verify the derivation.
-    layout_evidence = None
-    for layout in _layout_profiles(profile):
-        if _get(layout, "evidence"):
-            layout_evidence = layout
-            break
-    resolution = compute_content_box(rules.canvas, protected, layout_evidence)
-    if resolution.content_box is None:
-        return None
-    box = {
-        "x": resolution.content_box.x / EMU_PER_INCH,
-        "y": resolution.content_box.y / EMU_PER_INCH,
-        "w": resolution.content_box.w / EMU_PER_INCH,
-        "h": resolution.content_box.h / EMU_PER_INCH,
-    }
-    # verified when: compute_content_box succeeded (canvas + protected
-    # regions are real layout evidence from the compiled rules), regardless
-    # of whether the template profiler attached an evidence string.
-    verified = bool(resolution.verified)
-    source = "derived:canvas_minus_protected_regions"
-    if not verified:
-        issues.append("content box derived without layout evidence; unverified")
-    return box, verified, source, issues
-
-
-def _layout_profiles(profile: Any) -> list[Any]:
-    layouts = getattr(profile, "layout_profiles", None)
-    if layouts is None and isinstance(profile, dict):
-        layouts = profile.get("layout_profiles")
-    return list(layouts or [])
-
-
-def _get(obj: Any, key: str, default: Any = None) -> Any:
-    if isinstance(obj, dict):
-        return obj.get(key, default)
-    return getattr(obj, key, default)
-
-
-def _pt_to_in(value: Any) -> float:
-    return float(value or 0) / PT_PER_INCH
-
-
-def _pt_to_emu(value: Any) -> float:
-    return float(value or 0) * 12700
 
 
 def _find_source_binding(ref: str, source_slide: SlideIR) -> dict[str, Any] | None:
@@ -562,11 +459,12 @@ def _bind_expected_hashes(
             issues.append(f"op {idx}: cannot resolve shape for hash binding: {exc}")
             continue
         try:
-            typed = SetShapeGeometryOp.model_validate(op) if op.get("op") == "set_shape_geometry" \
+            typed = (
+                SetShapeGeometryOp.model_validate(op)
+                if op.get("op") == "set_shape_geometry"
                 else SetShapeStyleOp.model_validate(op)
-            clone.apply_operations(
-                OperationBatch(operations=[typed]), transactional=False
             )
+            clone.apply_operations(OperationBatch(operations=[typed]), transactional=False)
         except Exception as exc:  # noqa: BLE001
             issues.append(f"op {idx}: in-memory chaining failed: {exc}")
     return operations, issues

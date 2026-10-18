@@ -52,7 +52,7 @@ def test_restyle_missing_input_invalid(tmp_path):
 
 def test_create_prompt_starts_and_waits(tmp_path):
     code = gpn_main([
-        "--project-root", str(tmp_path), "create",
+        "--project-root", str(PROJECT_ROOT), "create",
         "--prompt", "Brief with numbers 400 FTE",
         "--output", str(tmp_path / "out.pptx"),
         "--run-dir", str(tmp_path / "run2")])

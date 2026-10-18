@@ -30,9 +30,11 @@ import os
 import sys
 import tempfile
 import zipfile
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .models import (
     ApplicabilityProof,
@@ -950,6 +952,92 @@ def _candidate_ref(run: Path) -> Path:
         "CANDIDATE_MISSING: no explicit candidate path in manifest")
 
 
+class ProductSummary(BaseModel):
+    """Convenience flags, fully DERIVED from the canonical acceptance.
+
+    This is not a second source of truth. Every field is computed from the
+    ``ProductAcceptance`` produced by ``aggregate_product_acceptance`` plus
+    explicit user decisions; ``user_approved`` is never set by the model.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str = "product-summary/v1"
+    subject_candidate_sha256: str = ""
+    acceptance_schema_version: str = ""
+    accepted: bool = False
+    publication_eligible: bool = False
+    required_scope_count: int = 0
+    checked_scope_count: int = 0
+    automated_gates_pass: bool = False
+    failing_gate_ids: list[str] = Field(default_factory=list)
+    unknown_gate_ids: list[str] = Field(default_factory=list)
+    model_design_review_pass: bool = False
+    model_design_review_basis: str = ""
+    user_approved: bool = False
+    user_approved_note: str = (
+        "never set by the model; only an explicit user decision may set it")
+    release_ready: bool = False
+    release_ready_blockers: list[str] = Field(default_factory=list)
+    derived_from: list[str] = Field(default_factory=list)
+
+
+def build_product_summary(
+    acceptance: ProductAcceptance,
+    evidence: Sequence[GateEvidence],
+    user_decision: dict[str, Any] | None = None,
+) -> ProductSummary:
+    """Derive the convenience summary from the canonical acceptance.
+
+    A convenience flag can never contradict the canonical result: it is a
+    projection of the same gate evidence, and any fail/unknown/missing
+    scope keeps ``release_ready`` false with the reason listed.
+    """
+    user_decision = dict(user_decision or {})
+    failing = sorted({ev.gate_id for ev in evidence
+                      if ev.status is GateStatus.FAIL})
+    unknown = sorted({ev.gate_id for ev in evidence
+                      if ev.status is GateStatus.UNKNOWN})
+    review_ids = sorted({ev.gate_id for ev in evidence
+                         if ev.gate_id.startswith("visual_review")
+                         or ev.gate_id.startswith("design_review")})
+    review_pass = bool(
+        review_ids
+        and all(ev.status is GateStatus.PASS for ev in evidence
+                if ev.gate_id in review_ids))
+    blockers = list(failing) + [f"unknown: {g}" for g in unknown]
+    if not review_ids:
+        blockers.append("no model design/visual review evidence")
+    if not acceptance.subject_candidate_sha256:
+        blockers.append("acceptance is not bound to a subject candidate")
+    user_approved = bool(user_decision.get("user_approved", False))
+    return ProductSummary(
+        subject_candidate_sha256=acceptance.subject_candidate_sha256,
+        acceptance_schema_version=acceptance.acceptance_schema_version,
+        accepted=acceptance.accepted,
+        publication_eligible=acceptance.publication_eligible,
+        required_scope_count=acceptance.required_scope_count,
+        checked_scope_count=acceptance.checked_scope_count,
+        automated_gates_pass=bool(acceptance.accepted
+                                  and not failing and not unknown),
+        failing_gate_ids=failing,
+        unknown_gate_ids=unknown,
+        model_design_review_pass=review_pass,
+        model_design_review_basis=(
+            "every visual/design review gate for the current candidate SHA "
+            "has PASS status"
+            if review_pass else
+            "no current PASS verdict for every review gate: "
+            + (", ".join(sorted(set(unknown) | set(failing))) or "absent")),
+        user_approved=user_approved,
+        release_ready=bool(acceptance.publication_eligible and user_approved
+                           and not blockers),
+        release_ready_blockers=blockers,
+        derived_from=["product_acceptance.json",
+                      "gate_index.json"],
+    )
+
+
 def main(run_dir: str) -> int:
     run = Path(run_dir).resolve()
     # project_root: the directory containing ontology/ (project layout),
@@ -1089,6 +1177,9 @@ def main(run_dir: str) -> int:
                                    "bytes": p.stat().st_size}
     (run / "gate_index.json").write_text(
         json.dumps(index, ensure_ascii=False, indent=1), encoding="utf-8")
+    summary = build_product_summary(acceptance, gate_reports)
+    (run / "product_summary.json").write_text(
+        summary.model_dump_json(indent=1), encoding="utf-8")
 
     print(json.dumps({
         "accepted": acceptance.accepted,

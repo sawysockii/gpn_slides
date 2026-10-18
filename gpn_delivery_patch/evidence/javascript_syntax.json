@@ -1,0 +1,11 @@
+{
+  "command": [
+    "node",
+    "--check",
+    "tools/layout/src/measure.js"
+  ],
+  "exit_code": 0,
+  "stdout": "",
+  "stderr": "",
+  "browser_execution": false
+}

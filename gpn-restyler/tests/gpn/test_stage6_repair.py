@@ -80,6 +80,13 @@ def _intent(slide_id: str, refs: list[str], zones: list[dict],
 
 def _stub_measurer(height_pt: float = 20.0, overflow: bool = False,
                    seen: list | None = None, drop: set | None = None):
+    """Solver/contract double for the measured placement bridge.
+
+    It answers the CURRENT measurement contract (``required_outer_height_pt``
+    plus ``confidence``); the caller runs with profile_kind=test_only so the
+    declared confidence is honest. Geometry fit evidence comes from real
+    Chromium runs, not from this double.
+    """
     def run(request):
         if seen is not None:
             seen.append(request.model_dump(mode="json"))
@@ -90,14 +97,17 @@ def _stub_measurer(height_pt: float = 20.0, overflow: bool = False,
             if drop and (cid in drop or base in drop):
                 continue
             box = c.box_pt
+            required = (float(box.h) + 50.0 if overflow
+                        else min(float(box.h), height_pt))
             items.append({
                 "component_id": cid,
-                "occupied_height_pt": (float(box.h) + 50.0
-                                         if overflow
-                                         else min(float(box.h), height_pt)),
+                "occupied_height_pt": required,
+                "required_outer_height_pt": required,
                 "occupied_width_pt": float(box.w),
                 "intrinsic_min_width_pt": 24.0,
                 "intrinsic_preferred_width_pt": float(box.w),
+                "content_absent": False,
+                "confidence": "test_only",
                 "overflow_x": False, "overflow_y": overflow,
                 "excess_pt": {"x": 0.0, "y": 50.0 if overflow else 0.0}})
         return {"items": items}
@@ -106,7 +116,7 @@ def _stub_measurer(height_pt: float = 20.0, overflow: bool = False,
 
 def _options(**kw) -> dict:
     opts = {"project_root": PROJECT_ROOT, "use_cache": False,
-            "profile_kind": "production", "max_local_layout_attempts": 2,
+            "profile_kind": "test_only", "max_local_layout_attempts": 2,
             "layout_mode": "recompose", "generation_origin": "test"}
     opts.update(kw)
     return opts
@@ -155,8 +165,8 @@ def test_source_sized_overflow_box_is_infeasible(tmp_path: Path) -> None:
     res = resolve_layout(tree, slide, ledger, _rules(), TEST_PROFILE,
                          _bundle(), _stub_measurer(overflow=True),
                          _options())
-    assert res.status in ("needs_recompose", "search_exhausted",
-                           "constraint_conflict"), res.status
+    assert res.status in ("infeasible", "needs_recompose",
+                           "search_exhausted", "constraint_conflict"), res.status
     assert any("overflow_y" in u or "needs_recompose" in u
                or "constraint_conflict" in u or "search_exhausted" in u
                for u in res.unresolved)
@@ -274,12 +284,16 @@ def test_same_zone_stacks_by_measured_heights(tmp_path: Path) -> None:
                 getattr(r, "text", "") or ""
                 for p in paras for r in (getattr(p, "runs", None) or []))
             tall = "tall" in text
+            required = 60.0 if tall else 20.0
             items.append({
                 "component_id": c.id,
-                "occupied_height_pt": 60.0 if tall else 20.0,
+                "occupied_height_pt": required,
+                "required_outer_height_pt": required,
                 "occupied_width_pt": float(c.box_pt.w),
                 "intrinsic_min_width_pt": 24.0,
                 "intrinsic_preferred_width_pt": float(c.box_pt.w),
+                "content_absent": False,
+                "confidence": "test_only",
                 "overflow_x": False, "overflow_y": False,
                 "excess_pt": {"x": 0.0, "y": 0.0}})
         return {"items": items}

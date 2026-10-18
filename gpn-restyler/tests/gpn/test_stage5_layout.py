@@ -238,6 +238,7 @@ def test_no_hidden_font_shrink(tmp_path: Path) -> None:
     """Overload never triggers fit_text/autofit/size clamps: the measured
     request keeps exact role sizes and attempts use only allowed actions."""
     from slides_cli.gpn.layout import ALLOWED_ATTEMPTS
+    from slides_cli.gpn.measured_placement import SOLVER_EVIDENCE_ACTIONS
 
     deck, ledger = _import_deck(["Перегруженный " * 400], tmp_path)
     slide = deck.slides[0]
@@ -249,8 +250,8 @@ def test_no_hidden_font_shrink(tmp_path: Path) -> None:
     measurer = _measurer()
     res = resolve_layout(tree, slide, ledger, _rules(), tiny,
                          _bundle(), measurer, _options(tmp_path))
-    assert res.status in ("needs_recompose", "search_exhausted",
-                          "constraint_conflict")
+    assert res.status in ("infeasible", "needs_recompose",
+                          "search_exhausted", "constraint_conflict")
     role_size = _rules().roles["body"].default_size_pt
     for seen in measurer.seen:
         for comp in seen["components"]:
@@ -259,8 +260,29 @@ def test_no_hidden_font_shrink(tmp_path: Path) -> None:
                     assert run["style"]["size_pt"] == role_size
     for attempt in res.attempts:
         for change in attempt.changes:
-            assert change["action"] in (*ALLOWED_ATTEMPTS, "initial_allocation")
+            assert change["action"] in (
+                *ALLOWED_ATTEMPTS, "initial_allocation", *SOLVER_EVIDENCE_ACTIONS
+            )
         assert "overflow_y" in " ".join(attempt.hard_issues)
+    # The solver evidence records measured variants only. It never carries a
+    # run, a box or a type override that could shrink type, drop text or turn
+    # on autofit: only measured width/height numbers and solver bookkeeping.
+    forbidden = {"runs", "text", "size_pt", "box_emu", "box_pt", "autofit",
+                 "font_scale", "scale", "dropped", "paragraphs"}
+
+    def _assert_evidence_only(value):
+        if isinstance(value, dict):
+            assert not (forbidden & set(value)), value
+            for item in value.values():
+                _assert_evidence_only(item)
+        elif isinstance(value, list):
+            for item in value:
+                _assert_evidence_only(item)
+
+    for attempt in res.attempts:
+        for change in attempt.changes:
+            if change["action"] in SOLVER_EVIDENCE_ACTIONS:
+                _assert_evidence_only(change)
 
 
 def test_preserve_overload_infeasible(tmp_path: Path) -> None:
@@ -274,12 +296,17 @@ def test_preserve_overload_infeasible(tmp_path: Path) -> None:
     tree = compile_composition(intent, slide, ledger, _rules(), tiny)
     res = resolve_layout(tree, slide, ledger, _rules(), tiny,
                          _bundle(), _measurer(), _options(tmp_path))
-    assert res.status in ("needs_recompose", "search_exhausted",
-                          "constraint_conflict")
+    assert res.status in ("infeasible", "needs_recompose",
+                          "search_exhausted", "constraint_conflict")
     assert res.resolved_slide == {}
     assert any("needs_recompose" in u or "search_exhausted" in u
-               or "constraint_conflict" in u for u in res.unresolved)
-    assert any("attempts consumed" in u for u in res.unresolved)
+               or "constraint_conflict" in u or "CONSTRAINT_GEOMETRY_INFEASIBLE" in u
+               for u in res.unresolved)
+    # The refusal is bounded: the declared attempt budget is respected and the
+    # solver's INFEASIBLE names the finite model it proved, never "too much
+    # content" for the whole deck.
+    assert len(res.attempts) <= 3
+    assert any("CONSTRAINT_GEOMETRY_INFEASIBLE" in u for u in res.unresolved)
 
 
 def test_global_attempt_budget(tmp_path: Path) -> None:
@@ -461,5 +488,5 @@ def test_overlap_relation_is_scoped(tmp_path: Path) -> None:
     res3 = resolve_layout(tree3, slide, ledger, _rules(), flat,
                           _bundle(), _measurer(),
                           _options(tmp_path, layout_mode="recompose"))
-    assert res3.status == "constraint_conflict", res3.unresolved
-    assert any("overlap_unresolved" in u for u in res3.unresolved)
+    assert res3.status == "infeasible", res3.unresolved
+    assert any("CONSTRAINT_GEOMETRY_INFEASIBLE" in u for u in res3.unresolved)

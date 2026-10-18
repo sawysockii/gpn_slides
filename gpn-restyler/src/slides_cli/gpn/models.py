@@ -182,6 +182,7 @@ Scalar = Annotated[
 # Evidence / value primitives (spec §7.1)
 # ---------------------------------------------------------------------------
 
+
 class SourceRef(BaseModel):
     """Reference into an actual PPTX package object."""
 
@@ -276,6 +277,7 @@ class TypedValue(BaseModel):
 # ---------------------------------------------------------------------------
 # Text (spec §7.2)
 # ---------------------------------------------------------------------------
+
 
 class ColorModifier(BaseModel):
     model_config = StrictModel
@@ -468,7 +470,6 @@ class ImportSupportReport(BaseModel):
     blocking_uncertainty_ids: list[str] = Field(default_factory=list)
 
 
-
 class SemanticMark(BaseModel):
     model_config = StrictModel
 
@@ -535,9 +536,7 @@ class ParagraphIR(BaseModel):
     paragraph_text_token: str = "black"
 
 
-TextRole = Literal[
-    "title", "body", "section", "footnote", "caption", "metric", "unknown"
-]
+TextRole = Literal["title", "body", "section", "footnote", "caption", "metric", "unknown"]
 
 
 class TextPayload(BaseModel):
@@ -554,6 +553,7 @@ class TextPayload(BaseModel):
 # ---------------------------------------------------------------------------
 # Tables (spec §7.3)
 # ---------------------------------------------------------------------------
+
 
 class CellStyleIR(BaseModel):
     model_config = StrictModel
@@ -613,6 +613,7 @@ class TablePayload(BaseModel):
 # ---------------------------------------------------------------------------
 # Charts (spec §7.4)
 # ---------------------------------------------------------------------------
+
 
 class ChartPointIR(BaseModel):
     model_config = StrictModel
@@ -725,6 +726,7 @@ ChartUnion = Annotated[ChartPayload | NewChartPayload, Field(discriminator="repr
 # Shapes, connectors, images, groups, unknown (spec §7.5)
 # ---------------------------------------------------------------------------
 
+
 class PathCommand(BaseModel):
     model_config = StrictModel
 
@@ -760,9 +762,9 @@ class ConnectorPayload(BaseModel):
     path_points: list[PointPt] = Field(default_factory=list)
     arrow_start: str = "none"
     arrow_end: str = "none"
-    relation_kind: Literal[
-        "sequence", "causal", "containment", "association", "unknown"
-    ] = "unknown"
+    relation_kind: Literal["sequence", "causal", "containment", "association", "unknown"] = (
+        "unknown"
+    )
     label_refs: list[str] = Field(default_factory=list)
     connection_evidence: list[str] = Field(default_factory=list)
     text: TextPayload | None = None
@@ -774,9 +776,9 @@ class ImagePayload(BaseModel):
     asset: AssetRef
     crop: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
     rotation_deg: float = 0.0
-    source_role: Literal[
-        "photo", "logo", "illustration", "data_chart", "diagram", "unknown"
-    ] = "unknown"
+    source_role: Literal["photo", "logo", "illustration", "data_chart", "diagram", "unknown"] = (
+        "unknown"
+    )
     alt_text: str | None = None
     linked_uri: str | None = None
 
@@ -902,8 +904,18 @@ class SourceDeckIR(BaseModel):
 # ---------------------------------------------------------------------------
 
 LedgerAtomKind = Literal[
-    "text", "number", "unit", "condition", "footnote", "table_cell", "chart_point",
-    "diagram_node", "diagram_edge", "asset", "notes", "hyperlink",
+    "text",
+    "number",
+    "unit",
+    "condition",
+    "footnote",
+    "table_cell",
+    "chart_point",
+    "diagram_node",
+    "diagram_edge",
+    "asset",
+    "notes",
+    "hyperlink",
 ]
 
 
@@ -962,6 +974,7 @@ class OutputObjectMap(BaseModel):
 # Stage 1: import artifacts
 # ---------------------------------------------------------------------------
 
+
 class ImportArtifactManifest(BaseModel):
     model_config = StrictModel
 
@@ -975,6 +988,7 @@ class ImportArtifactManifest(BaseModel):
 # ---------------------------------------------------------------------------
 # Stage 1: workbook snapshot for chart comparison
 # ---------------------------------------------------------------------------
+
 
 class WorkbookCellSnapshot(BaseModel):
     model_config = StrictModel
@@ -1003,6 +1017,7 @@ class WorkbookSnapshot(BaseModel):
 # ---------------------------------------------------------------------------
 # Stage 2: ontology documents and normative statements
 # ---------------------------------------------------------------------------
+
 
 class OntologyDocument(BaseModel):
     model_config = StrictModel
@@ -1089,8 +1104,11 @@ class PredicateComparison(BaseModel):
     model_config = StrictModel
 
     relation: Literal[
-        "equivalent", "compatible_refinement", "disjoint_scope",
-        "contradiction", "unresolved",
+        "equivalent",
+        "compatible_refinement",
+        "disjoint_scope",
+        "contradiction",
+        "unresolved",
     ] = "unresolved"
     intersection: str = ""
     reason: str = ""
@@ -1105,9 +1123,7 @@ class OntologyConflict(BaseModel):
     property: str
     left: NormativeStatement | None = None
     right: NormativeStatement | None = None
-    kind: Literal[
-        "contradiction", "compatible_refinement", "disjoint_scope", "unresolved"
-    ]
+    kind: Literal["contradiction", "compatible_refinement", "disjoint_scope", "unresolved"]
     blocking: bool
     explanation: str
 
@@ -1129,6 +1145,7 @@ class OntologyConflictReport(BaseModel):
 # ---------------------------------------------------------------------------
 # Stage 2: compiled ontology
 # ---------------------------------------------------------------------------
+
 
 class RoleStyle(BaseModel):
     model_config = StrictModel
@@ -1239,9 +1256,9 @@ class RuleBinding(BaseModel):
     checker_key: str
     check_kind: Literal["deterministic", "hybrid"]
     supported_scopes: list[str] = Field(default_factory=list)
-    implementation_status: Literal[
-        "implemented", "partial", "deferred", "needs_binding"
-    ] = "deferred"
+    implementation_status: Literal["implemented", "partial", "deferred", "needs_binding"] = (
+        "deferred"
+    )
     required_evidence: list[str] = Field(default_factory=list)
     deferred_stage: int | None = None
     condition_fingerprint: str = ""
@@ -1288,9 +1305,9 @@ class RuleBindingReport(BaseModel):
     @property
     def unresolved_rule_ids(self) -> list[str]:
         return [
-            e.rule_id for e in self.entries
-            if e.implementation_status in ("needs_binding", "deferred")
-            and e.severity == "hard"
+            e.rule_id
+            for e in self.entries
+            if e.implementation_status in ("needs_binding", "deferred") and e.severity == "hard"
         ]
 
 
@@ -1519,8 +1536,9 @@ class DiscoveredFontFile(BaseModel):
     model_config = StrictModel
 
     path: str
-    origin: Literal["configured_fonts_dir", "user_fonts", "local_fonts",
-                    "system_fonts", "extra_root"]
+    origin: Literal[
+        "configured_fonts_dir", "user_fonts", "local_fonts", "system_fonts", "extra_root"
+    ]
     collection_index: int | None = None
     family: str = ""
     full_name: str = ""
@@ -1548,6 +1566,7 @@ class FontDiscoveryReport(BaseModel):
 # ---------------------------------------------------------------------------
 # Stage 5 §3.1: measurement protocol models (JSON-stable, strict schema)
 # ---------------------------------------------------------------------------
+
 
 class MeasureRunStyle(BaseModel):
     """Resolved run style for the measurement view (no CSS leaks in)."""
@@ -1592,6 +1611,11 @@ class MeasureParagraph(BaseModel):
     # Empty for the legacy one-object-per-component path.
     source_ref: str = ""
     source_paragraph_index: int = -1
+    # §4.2: a paragraph inside an authored block may resolve its own
+    # ontology role (a metric value vs its caption in ONE frame). The token
+    # is validated against the compiled roles by the resolver; it is never a
+    # literal size.
+    role: str = ""
 
 
 class MeasureComponent(BaseModel):
@@ -1669,27 +1693,67 @@ class MeasuredFragment(BaseModel):
     baseline_pt: float | None = None
 
 
+class MeasuredLineBox(BaseModel):
+    """One logical line, expressed in INNER-origin coordinates (§5.1)."""
+
+    model_config = StrictModel
+
+    line_index: int = 0
+    paragraph_id: str = ""
+    run_ids: list[str] = Field(default_factory=list)
+    rect_inner_pt: RectPt = Field(default_factory=RectPt)
+
+
 class MeasuredText(BaseModel):
+    """One measured component (§5.1 coordinate contract).
+
+    Coordinate contract (single, documented; versioned by ``TOOL_VERSION``):
+
+    * ``fragments[].logical_rect_pt`` stay **outer-origin** relative — they
+      include the top inset. This preserves the legacy
+      ``occupied_height_pt`` meaning verbatim (max bottom relative to the
+      outer origin, top inset included, bottom inset excluded).
+    * ``inner_box_in_frame_pt`` is the inner text area inside the outer box.
+    * ``content_bounds_inner_pt`` / ``logical_line_boxes_inner_pt`` are the
+      same content translated to the INNER origin (top-left inset), which is
+      the coordinate space a fit test against the inner area uses.
+    * ``required_outer_height_pt`` = topInset + inner content height +
+      bottomInset. It is the outer box height that fits exactly; comparing
+      ``occupied_height_pt`` alone under-charges the bottom inset.
+    * ``overflow_x``/``overflow_y`` compare content extents against
+      ``right = outer.w - rightInset`` and ``bottom = outer.h - bottomInset``.
+      Subtracting the top/left inset a second time would double-charge it.
+    """
+
     model_config = StrictModel
 
     component_id: str = ""
     source_ref: str = ""
     available_inner_box_pt: RectPt = Field(default_factory=RectPt)
+    inner_box_in_frame_pt: RectPt = Field(default_factory=RectPt)
     logical_bounds_pt: RectPt = Field(default_factory=RectPt)
+    content_bounds_inner_pt: RectPt = Field(default_factory=RectPt)
+    logical_line_boxes_inner_pt: list[MeasuredLineBox] = Field(default_factory=list)
     occupied_height_pt: float = 0.0
+    required_outer_height_pt: float = 0.0
     intrinsic_min_width_pt: float = 0.0
     intrinsic_preferred_width_pt: float = 0.0
     overflow_x: bool = False
     overflow_y: bool = False
+    overflow_inner_x: bool = False
+    overflow_inner_y: bool = False
     excess_pt: dict[str, float] = Field(default_factory=dict)
+    excess_inner_pt: dict[str, float] = Field(default_factory=dict)
+    content_absent: bool = False
     fragments: list[MeasuredFragment] = Field(default_factory=list)
     line_count: int = 0
     paragraph_count: int = 0
     text_origin_x_pt: float = 0.0
     applied_transforms: list[str] = Field(default_factory=list)
     font_evidence: list[str] = Field(default_factory=list)
-    confidence: Literal["exact_browser", "calibrated_native_proxy",
-                        "test_only", "unsupported"] = "exact_browser"
+    confidence: Literal["exact_browser", "calibrated_native_proxy", "test_only", "unsupported"] = (
+        "exact_browser"
+    )
     issues: list[str] = Field(default_factory=list)
 
 
@@ -1703,6 +1767,57 @@ class MeasurementResponse(BaseModel):
     font_load: FontLoadReport = Field(default_factory=FontLoadReport)
     items: list[MeasuredText] = Field(default_factory=list)
     issues: list[str] = Field(default_factory=list)
+
+
+class TextPresenceKind(StrEnum):
+    """Actual displayable content of a saved shape's text body (§5.2)."""
+
+    TEXT = "text"
+    FIELD = "field"
+    BULLET_OR_NUMBERING = "bullet_or_numbering"
+    EMPTY_GEOMETRY = "empty_geometry"
+    UNKNOWN = "unknown"
+
+
+class TextPresence(BaseModel):
+    """What a saved shape's ``txBody`` actually displays.
+
+    Decided from the reopened OOXML bytes only (``a:t`` content, ``a:fld``
+    metadata/cache, ``a:buChar``/``a:buAutoNum``/``a:buNone``, and the
+    effective visibility of those elements) — never from shape length, bbox,
+    colour or source object id.
+    """
+
+    model_config = StrictModel
+
+    kind: TextPresenceKind = TextPresenceKind.UNKNOWN
+    token_refs: list[str] = Field(default_factory=list)
+    visible_content_evidence: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+
+class SavedTextFitReport(BaseModel):
+    """§5.2 text-fit scope over saved bytes.
+
+    ``applicable`` / ``measured`` / ``not_applicable`` are kept apart with
+    reasons; ``ok`` covers every required applicable component only. An empty
+    decoration is ``not_applicable`` for TEXT FIT ONLY — it still participates
+    in geometry/style/path/semantic scopes.
+    """
+
+    model_config = StrictModel
+
+    schema_version: str = "saved-text-fit/v1"
+    candidate_sha256: str = ""
+    input_hashes: dict[str, str] = Field(default_factory=dict)
+    applicable: list[str] = Field(default_factory=list)
+    measured: list[str] = Field(default_factory=list)
+    not_applicable: list[dict[str, str]] = Field(default_factory=list)
+    unknown_state: list[str] = Field(default_factory=list)
+    overflows: list[str] = Field(default_factory=list)
+    ok: bool = False
+    checked_scopes: list[str] = Field(default_factory=list)
+    unsupported_scopes: list[str] = Field(default_factory=list)
 
 
 class MeasurementFontBinding(BaseModel):
@@ -1735,6 +1850,7 @@ class MeasurementFontBundle(BaseModel):
 # Stage 5 §3.1: composition + resolution models
 # ---------------------------------------------------------------------------
 
+
 class LayoutConstraint(BaseModel):
     model_config = StrictModel
 
@@ -1743,8 +1859,7 @@ class LayoutConstraint(BaseModel):
     target_ids: list[str] = Field(default_factory=list)
     value: dict[str, Any] = Field(default_factory=dict)
     strength: Literal["hard", "soft"] = "hard"
-    origin: Literal["ontology", "template", "source", "intent",
-                    "engineering"] = "engineering"
+    origin: Literal["ontology", "template", "source", "intent", "engineering"] = "engineering"
     evidence_refs: list[str] = Field(default_factory=list)
 
 
@@ -1763,6 +1878,14 @@ class ComponentNode(BaseModel):
     surface_token: str = ""
     foreground_token: str = ""
     stroke_token: str = ""
+    # §4.2: a rich block has ONE frame but may hold several semantic roles.
+    # `ref_roles` maps a source object id inside the block to the target role
+    # that object must resolve to. Without it a metric value and its caption
+    # would both render at the block role (large_metric on the caption), and
+    # the measured frame would overflow by design.
+    ref_roles: dict[str, str] = Field(default_factory=dict)
+    paragraph_groups: list[list[str]] = Field(default_factory=list)
+    inline_separator: Literal["", " "] = " "
 
 
 class ContentBinding(BaseModel):
@@ -1783,6 +1906,7 @@ class CompositionTree(BaseModel):
     schema_version: str = "1.0"
     slide_id: str = ""
     candidate_id: str = ""
+    slide_background_token: str = ""
     source_hash: str = ""
     ontology_snapshot_hash: str = ""
     template_hash: str = ""
@@ -1813,10 +1937,17 @@ class LayoutResolutionResult(BaseModel):
     model_config = StrictModel
 
     schema_version: str = "1.0"
-    status: Literal["resolved", "infeasible", "needs_assets",
-                    "needs_review", "schema_invalid",
-                    "unsupported_representation", "constraint_conflict",
-                    "needs_recompose", "search_exhausted"] = "needs_review"
+    status: Literal[
+        "resolved",
+        "infeasible",
+        "needs_assets",
+        "needs_review",
+        "schema_invalid",
+        "unsupported_representation",
+        "constraint_conflict",
+        "needs_recompose",
+        "search_exhausted",
+    ] = "needs_review"
     resolved_slide: dict[str, Any] = Field(default_factory=dict)
     attempts: list[LayoutAttempt] = Field(default_factory=list)
     addressed_issues: list[str] = Field(default_factory=list)
@@ -1842,6 +1973,7 @@ class GeometryReport(BaseModel):
 # ---------------------------------------------------------------------------
 # Stage 5 §12.3-12.4: native render probe + calibration
 # ---------------------------------------------------------------------------
+
 
 class RenderFontEvidence(BaseModel):
     """One font observed in the native render PDF."""
@@ -2001,8 +2133,7 @@ class CandidateKey(BaseModel):
     revision: int = 0
 
     def __str__(self) -> str:  # pragma: no cover - trivial
-        return (f"{self.run_id}/{self.source_slide_id}/"
-                f"{self.candidate_id}/r{self.revision}")
+        return f"{self.run_id}/{self.source_slide_id}/{self.candidate_id}/r{self.revision}"
 
 
 class ArtifactEvidenceRef(BaseModel):
@@ -2057,8 +2188,7 @@ class SemanticUnit(BaseModel):
     kind: str
     content: TypedContentPayload = Field(default_factory=TypedContentPayload)
     source_refs: list[SourceEvidenceRef] = Field(default_factory=list)
-    preservation: Literal["required_exact", "required_semantic",
-                          "optional"] = "required_semantic"
+    preservation: Literal["required_exact", "required_semantic", "optional"] = "required_semantic"
     parent_id: str | None = None
     semantic_role: str = ""
 
@@ -2102,11 +2232,11 @@ class SemanticDeck(BaseModel):
     @model_validator(mode="after")
     def _check_hash(self) -> SemanticDeck:
         import hashlib
+
         canonical = json.dumps(
-            [s.model_dump(mode="json") for s in self.slides],
-            sort_keys=True, ensure_ascii=False)
-        if self.sha256 and self.sha256 != hashlib.sha256(
-                canonical.encode("utf-8")).hexdigest():
+            [s.model_dump(mode="json") for s in self.slides], sort_keys=True, ensure_ascii=False
+        )
+        if self.sha256 and self.sha256 != hashlib.sha256(canonical.encode("utf-8")).hexdigest():
             raise ValueError("semantic deck sha256 mismatch")
         return self
 
@@ -2229,6 +2359,10 @@ class SelectionEntry(BaseModel):
     considered: list[str] = Field(default_factory=list)
     rejected: list[str] = Field(default_factory=list)
     reason: str = ""
+
+    selected_candidate_sha256: str = ""
+    selected_candidate_path: str = ""
+    assembly_linkage: str = ""
 
 
 class SelectionReport(BaseModel):
@@ -2360,6 +2494,7 @@ class ArtifactStore:
         if p is None:
             return False, ""
         import hashlib
+
         digest = hashlib.sha256(p.read_bytes()).hexdigest()
         return digest == ref.sha256 and p.stat().st_size == ref.byte_count, digest
 
@@ -2382,8 +2517,16 @@ class EncodingProposal(BaseModel):
     model_config = StrictModel
 
     encoding_id: str = ""
-    kind: Literal["process", "structure", "comparison", "table", "data",
-                  "typographic", "evidence", "unspecified"] = "unspecified"
+    kind: Literal[
+        "process",
+        "structure",
+        "comparison",
+        "table",
+        "data",
+        "typographic",
+        "evidence",
+        "unspecified",
+    ] = "unspecified"
     expresses: list[str] = Field(default_factory=list)
     source_unit_ids: list[str] = Field(default_factory=list)
     risks: list[str] = Field(default_factory=list)
@@ -2405,8 +2548,7 @@ class SlideDesignBrief(BaseModel):
     secondary_group_ids: list[str] = Field(default_factory=list)
     supporting_evidence_ids: list[str] = Field(default_factory=list)
     caveat_ids: list[str] = Field(default_factory=list)
-    visual_encoding_candidates: list[EncodingProposal] = Field(
-        default_factory=list)
+    visual_encoding_candidates: list[EncodingProposal] = Field(default_factory=list)
     forbidden_inferences: list[str] = Field(default_factory=list)
     applicable_rule_refs: list[str] = Field(default_factory=list)
     brief_sha256: str = ""
@@ -2415,9 +2557,16 @@ class SlideDesignBrief(BaseModel):
 class ConceptTopology(BaseModel):
     model_config = StrictModel
 
-    topology: Literal["process_flow", "comparison", "hub_spoke",
-                      "stages", "matrix", "evidence_focus", "typographic",
-                      "unspecified"] = "unspecified"
+    topology: Literal[
+        "process_flow",
+        "comparison",
+        "hub_spoke",
+        "stages",
+        "matrix",
+        "evidence_focus",
+        "typographic",
+        "unspecified",
+    ] = "unspecified"
     group_adjacency: str = ""
 
 
@@ -2425,8 +2574,7 @@ class DominanceSpec(BaseModel):
     model_config = StrictModel
 
     dominant_group_id: str = ""
-    dominance_kind: Literal["size", "position", "weight", "contrast"] = \
-        "size"
+    dominance_kind: Literal["size", "position", "weight", "contrast"] = "size"
     secondary_balance: str = ""
 
 
@@ -2457,8 +2605,7 @@ class SceneNodeSpec(BaseModel):
     model_config = StrictModel
 
     node_id: str
-    kind: Literal["text", "group", "connector", "table", "chart", "image",
-                  "container"]
+    kind: Literal["text", "group", "connector", "table", "chart", "image", "container"]
     semantic_role: str = ""
     content_ref: str = ""
 
@@ -2473,15 +2620,12 @@ class VisualConcept(BaseModel):
     design_brief_sha256: str = ""
     visual_argument: str = ""
     group_topology: ConceptTopology = Field(default_factory=ConceptTopology)
-    main_visual_encoding: EncodingProposal = Field(
-        default_factory=EncodingProposal)
+    main_visual_encoding: EncodingProposal = Field(default_factory=EncodingProposal)
     reading_path: list[str] = Field(default_factory=list)
     dominance: DominanceSpec = Field(default_factory=DominanceSpec)
     alignment_system: AlignmentSpec = Field(default_factory=AlignmentSpec)
-    whitespace_structure: WhitespaceSpec = Field(
-        default_factory=WhitespaceSpec)
-    source_to_visual_mapping: list[VisualMapping] = Field(
-        default_factory=list)
+    whitespace_structure: WhitespaceSpec = Field(default_factory=WhitespaceSpec)
+    source_to_visual_mapping: list[VisualMapping] = Field(default_factory=list)
     approved_example_refs: list[str] = Field(default_factory=list)
     applicable_rule_refs: list[str] = Field(default_factory=list)
     target_node_spec: list[SceneNodeSpec] = Field(default_factory=list)
@@ -2598,8 +2742,9 @@ class ModelTask(BaseModel):
     packet: str = ""
     required_images: list[str] = Field(default_factory=list)
     expected_response_units: list[str] = Field(default_factory=list)
-    status: Literal["pending", "responded", "validated", "consumed",
-                    "rejected"] = "pending"
+    status: Literal["pending", "responded", "validated", "consumed", "rejected", "superseded"] = (
+        "pending"
+    )
 
 
 class ModelTaskResponse(BaseModel):
@@ -2637,8 +2782,7 @@ class TransformationAuthorization(BaseModel):
     model_config = StrictModel
 
     authorized_by: str = ""
-    basis: Literal["harness_review", "rule", "policy",
-                   "unknown"] = "unknown"
+    basis: Literal["harness_review", "rule", "policy", "unknown"] = "unknown"
     ref: str = ""
 
 
@@ -2650,8 +2794,7 @@ class TransformationDecision(BaseModel):
     action: Literal["preserve", "recompose", "replace", "omit"] = "preserve"
     target_node_ids: list[str] = Field(default_factory=list)
     target_relation_ids: list[str] = Field(default_factory=list)
-    authorization: TransformationAuthorization = Field(
-        default_factory=TransformationAuthorization)
+    authorization: TransformationAuthorization = Field(default_factory=TransformationAuthorization)
     semantic_evidence: list[str] = Field(default_factory=list)
     reason: str = ""
     source_snapshot: str = ""
@@ -2680,6 +2823,147 @@ class OmitDecision(BaseModel):
     needs_review: bool = False
 
 
+class VisualTopology(BaseModel):
+    """Internal structure a required visual unit must keep when restyled."""
+
+    model_config = StrictModel
+
+    member_refs: list[str] = Field(default_factory=list)
+    member_count: int = 0
+    kind: Literal["single", "cluster", "chain", "group", "none"] = "single"
+    aspect_ratio: float = 0.0
+    # RectPt has required coordinates; an unknown source box is recorded as
+    # an explicit zero box rather than left implicit.
+    source_box_pt: RectPt = Field(default_factory=lambda: RectPt(x=0.0, y=0.0, w=0.0, h=0.0))
+
+
+class VisualUnit(BaseModel):
+    """§6.1: a MEANINGFUL unit of the source drawing.
+
+    One icon may consist of several lines/shapes; one source group may mix
+    required relations with optional decor. Classification uses semantic
+    analysis plus a source inventory with evidence — never "every text-less
+    object is unnecessary" and never "anything bigger than 4000 pt^2 is a
+    panel" (size is a technical feature, not a semantic classifier).
+    """
+
+    model_config = StrictModel
+
+    unit_id: str = ""
+    source_refs: list[str] = Field(default_factory=list)
+    semantic_unit_ids: list[str] = Field(default_factory=list)
+    relation_ids: list[str] = Field(default_factory=list)
+    kind: Literal[
+        "brand", "diagram", "chart", "table", "illustration", "screenshot", "optional_decor"
+    ] = "illustration"
+    required: bool = False
+    internal_topology: VisualTopology = Field(default_factory=VisualTopology)
+    source_aspect_constraints: list[dict[str, Any]] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+
+
+class VisualNormalizationPlan(BaseModel):
+    """§6.2: one decided action per visual unit, made before emission."""
+
+    model_config = StrictModel
+
+    unit_id: str = ""
+    action: Literal[
+        "keep_native_recolor", "redraw_native", "use_approved_asset", "authorize_omit", "unresolved"
+    ] = "unresolved"
+    surface_token: str = ""
+    stroke_token: str = ""
+    fill_token: str = ""
+    brand_asset_sha256: str = ""
+    approval_ref: str = ""
+    reason: str = ""
+    evidence: list[str] = Field(default_factory=list)
+
+
+class BrandAssetPlan(BaseModel):
+    """§6.4: what a brand asset becomes on the target surface."""
+
+    model_config = StrictModel
+
+    asset_ref: str = ""
+    source_sha256: str = ""
+    action: Literal[
+        "keep_as_is", "use_approved_colorway", "move_to_brand_surface", "unresolved"
+    ] = "keep_as_is"
+    chosen_sha256: str = ""
+    chosen_path: str = ""
+    alpha_analysis: dict[str, Any] = Field(default_factory=dict)
+    reason: str = ""
+
+
+class RepresentationReport(BaseModel):
+    """§6.3: required visual units must be VISIBLE in the saved package."""
+
+    model_config = StrictModel
+
+    schema_version: str = "visual-representation/v1"
+    candidate_sha256: str = ""
+    units: list[dict[str, Any]] = Field(default_factory=list)
+    missing_representation: list[str] = Field(default_factory=list)
+    invisible_representation: list[str] = Field(default_factory=list)
+    ok: bool = False
+
+
+class CandidateAttemptResult(BaseModel):
+    """One independent per-candidate build attempt (§7.2, §10.1).
+
+    ``built`` is NOT "the PPTX file exists": a failed measured/saved build
+    also leaves a file behind. Eligibility requires the typed stage results
+    (measured resolve + saved checks) plus the reviews for the candidate's
+    OWN slide, so a failure on another slide cannot decide this candidate's
+    quality and vice versa.
+    """
+
+    model_config = StrictModel
+
+    schema_version: str = "candidate-attempt/v1"
+    deck_key: str = ""
+    slide_id: str = ""
+    candidate_id: str = ""
+    candidate_path: str = ""
+    candidate_sha256: str = ""
+    operation_status: str = ""
+    measured_status: str = ""
+    saved_checks_status: str = ""
+    render_count: int = 0
+    attempt_count: int = 0
+    finding_codes: list[str] = Field(default_factory=list)
+    findings: list[TypedFinding] = Field(default_factory=list)
+    eligible: bool = False
+    eligibility_reason: str = ""
+
+
+class OverlapPermission(BaseModel):
+    """§5.4: one specific, typed reason why two drawables may overlap.
+
+    An overlap is permitted only between a named surface and a named
+    content, for a named relation, inside a named geometry scope, with
+    evidence. A flat list of pairs produced by crossing every surface of a
+    slide with every content object of that slide is not a permission set —
+    it would hide a future occlusion of an unrelated object — and such a
+    blanket list is refused by
+    ``composition._intent_overlap_constraints``.
+    """
+
+    model_config = StrictModel
+
+    underlay_id: str = ""
+    content_id: str = ""
+    relation_id: str = ""
+    allowed_kind: Literal["surface_child", "intentional_path_crossing", "explicit_overlay"] = (
+        "surface_child"
+    )
+    scope: Literal["container_containment", "declared_path_crossing", "declared_overlay"] = (
+        "container_containment"
+    )
+    evidence_ref: str = ""
+
+
 class SpanBinding(BaseModel):
     """Binding from a source span to a target node."""
 
@@ -2691,8 +2975,7 @@ class SpanBinding(BaseModel):
     source_token_range: tuple[int, int] | None = None
     target_node_id: str = ""
     target_token_range: tuple[int, int] | None = None
-    transformation: Literal["exact", "normative_transform",
-                            "semantic_representation"] = "exact"
+    transformation: Literal["exact", "normative_transform", "semantic_representation"] = "exact"
     authorization_ref: str | None = None
 
 
@@ -2702,8 +2985,9 @@ class AuthoredNode(BaseModel):
     model_config = StrictModel
 
     node_id: str = ""
-    kind: Literal["rich_text", "image", "table", "chart", "path",
-                  "surface", "container"] = "rich_text"
+    kind: Literal["rich_text", "image", "table", "chart", "path", "surface", "container"] = (
+        "rich_text"
+    )
     parent_id: str | None = None
     children: list[str] = Field(default_factory=list)
     layout_spec: dict[str, Any] = Field(default_factory=dict)

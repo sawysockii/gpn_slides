@@ -1,0 +1,53 @@
+{
+  "test_only": true,
+  "source": "/workspace/scratch/c2bc71435a54/.tmp/gpn_patch_work/verified_test_artifacts/test_actual_native_render_inclcurrent/native_probe.json",
+  "probe": {
+    "schema_version": "1.0",
+    "candidate_path": "/workspace/scratch/c2bc71435a54/.tmp/gpn_patch_work/verified_test_artifacts/test_actual_native_render_incl0/test_only_hidden.pptx",
+    "candidate_hash": "af44d510926e412ec54647e57cf15ff6beaadbf8df8cb0d4590638d30160b63c",
+    "renderer": "libreoffice",
+    "renderer_version": "LibreOfficeDev 26.8.0.0.alpha0 2c87e51eeaa2b413ff4ae097b2705eea1995d8e5",
+    "rendered": true,
+    "pdf_path": "/workspace/scratch/c2bc71435a54/.tmp/gpn_patch_work/verified_test_artifacts/test_actual_native_render_incl0/render/candidate.pdf",
+    "pdf_sha256": "fbaea07f9ea6b9c41231dd5b97d8392e392ffa2a8d76c88d4a3a1211bb636eee",
+    "page_count": 2,
+    "expected_page_count": 2,
+    "page_images": [
+      "/workspace/scratch/c2bc71435a54/.tmp/gpn_patch_work/verified_test_artifacts/test_actual_native_render_incl0/render/page-1.png",
+      "/workspace/scratch/c2bc71435a54/.tmp/gpn_patch_work/verified_test_artifacts/test_actual_native_render_incl0/render/page-2.png"
+    ],
+    "text_spans": 6,
+    "fonts": [
+      {
+        "pdf_name": "BAAAAA+DejaVuSans",
+        "subtype": "TrueType",
+        "embedded": true,
+        "subset": true,
+        "matched_internal_name": "DejaVu Sans",
+        "matched_sha256": "",
+        "is_expected": true,
+        "suspected_substitution": false
+      }
+    ],
+    "expected_faces": [
+      "DejaVu Sans"
+    ],
+    "missing_expected_faces": [],
+    "font_substitution_detected": false,
+    "clip_or_overlap_findings": [],
+    "checked_scopes": [
+      "text_extracted",
+      "pdf_font_inventory"
+    ],
+    "unsupported_scopes": [
+      "word_level_geometry_precision",
+      "glyph_clip_below_extractor_resolution",
+      "chart_automatic_label_placement"
+    ],
+    "support_limits": [
+      "renderer_is_not_target_powerpoint"
+    ],
+    "result": "pass",
+    "issues": []
+  }
+}

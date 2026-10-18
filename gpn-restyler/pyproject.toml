@@ -30,6 +30,7 @@ dependencies = [
   "fonttools>=4.66.1",
   "pypdf==6.0.0",
   "python-docx==1.2.0",
+  "ortools==9.15.6755",
 ]
 
 [project.urls]

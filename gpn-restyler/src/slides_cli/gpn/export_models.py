@@ -332,3 +332,13 @@ class ResolvedSlide(BaseModel):
     # grid; the saved-bytes gate compares them against reopened bytes.
     table_layout_emu: dict[str, dict[str, list[int]]] = Field(
         default_factory=dict)
+    # §4.4/§5.4: declared painter relations and typed overlap permissions.
+    # `underlay_of` maps a drawable target id to the surface that owns it
+    # (surface_child relation); the exporter builds ONE topological render
+    # order from it plus the surface-promotion rule.
+    underlay_of: dict[str, str] = Field(default_factory=dict)
+    overlap_permissions: list[dict[str, Any]] = Field(default_factory=list)
+    # Slide backdrop token from the authored scene (§6.4). Empty = slide
+    # default. The emitter fills the slide background with the token's
+    # normative RGB; text contrast rides on zone foreground tokens.
+    slide_background_token: str = ""

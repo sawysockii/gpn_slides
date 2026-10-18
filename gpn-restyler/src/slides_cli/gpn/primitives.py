@@ -13,6 +13,7 @@ from collections.abc import Callable
 from typing import Any
 
 from .models import MeasureComponent, MeasurementRequest
+from .units import floor_text_frame
 
 Measurer = Callable[[MeasurementRequest], dict[str, Any]]
 
@@ -660,6 +661,8 @@ def resolve_shape_preserve(node: Any, obj: Any,
                   "h": max(_emu_to_pt(box.h), 1.0)}
     else:
         box_pt = {"x": 36.0, "y": 36.0, "w": 648.0, "h": 100.0}
+    box_pt = floor_text_frame(box_pt, {"l": 7.2, "r": 7.2, "t": 3.6,
+                                       "b": 3.6}, 12.0)
     payload = getattr(obj, "payload", None)
     text_payload = getattr(payload, "text", None)
     paragraphs: list[dict[str, Any]] = []

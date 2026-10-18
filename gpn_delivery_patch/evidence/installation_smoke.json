@@ -1,0 +1,8 @@
+{
+  "scope": "reconstructed provided baseline, not Mac checkout",
+  "preflight": "preflight_ok",
+  "applied_file_count": 28,
+  "all_payload_hashes_match_tested_checkout": true,
+  "second_apply_changed_files": 0,
+  "dirty_change_preservation_and_rollback": "covered in test_installer and prior full-source append test"
+}

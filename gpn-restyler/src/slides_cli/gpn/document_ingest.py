@@ -114,9 +114,22 @@ def _resolve(spec: InputSpec, path: Path) -> Path:
     p = Path(path)
     if not p.is_absolute():
         p = Path(spec.project_root) / p
-    if not p.is_file():
-        raise IngestError(f"SOURCE_REFERENCE_MISSING: {p}")
-    return p
+    if p.is_file():
+        return p
+    import unicodedata
+    nfc = unicodedata.normalize("NFC", str(p))
+    if nfc != str(p) and Path(nfc).is_file():
+        return Path(nfc)
+    matches = [c for c in p.parent.glob("*")
+               if unicodedata.normalize("NFC", c.name) == nfc
+               and c.is_file()]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise IngestError(
+            f"INPUT_AMBIGUOUS_UNICODE: {len(matches)} NFC matches: "
+            + ", ".join(str(m) for m in matches[:3]))
+    raise IngestError(f"SOURCE_REFERENCE_MISSING: {p}")
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +381,19 @@ def source_object_inventory(run_dir: Path) -> list[dict]:
     return out
 
 
+def source_render_images(run_dir: Path) -> list[str]:
+    """Absolute paths of the rendered SOURCE slide images, in slide order.
+
+    ``None``/empty when no source render exists: the model must then state it
+    is working from the text inventory only (§5.1), never pretend it saw
+    the layout.
+    """
+    render_dir = run_dir / "source_render"
+    if not render_dir.is_dir():
+        return []
+    return sorted(str(p) for p in render_dir.glob("slide-*.png"))
+
+
 def semantic_task_for(spec: InputSpec, run_dir: Path,
                       input_sha: str) -> ModelTask:
     """Build the semantic_analysis / narrative_plan task packet (§9.5)."""
@@ -383,6 +409,7 @@ def semantic_task_for(spec: InputSpec, run_dir: Path,
         "source_manifest": manifest,
         "requested_slide_count": spec.requested_slide_count,
         "source_object_inventory": source_object_inventory(run_dir),
+        "source_render_images": source_render_images(run_dir),
         "response_schema": schema,
         "required_fields": ["slides", "units", "relations"]
         if not is_create else
@@ -407,6 +434,7 @@ def semantic_task_for(spec: InputSpec, run_dir: Path,
         input_fingerprint=input_sha,
         response_schema_id=schema,
         packet=rel,
+        required_images=source_render_images(run_dir),
         expected_response_units=packet["required_fields"])
 
 
@@ -434,4 +462,4 @@ def validate_semantic_response(response: ModelTaskResponse,
 __all__ = ["IngestError", "SourceBlock", "SourceAsset", "SourceDocument",
            "detect_kind", "ingest_input", "extract_pptx", "extract_document",
            "extract_prompt", "semantic_task_for", "source_object_inventory",
-           "validate_semantic_response"]
+           "source_render_images", "validate_semantic_response"]

@@ -459,3 +459,93 @@ Stage 4: native exporter/transplant (tables/charts/notes/links) on top of the St
 - `uv run pytest tests/gpn --no-cov` → **363 passed, 3 skipped** (было 352).
 - Новый `tests/gpn/test_stage9_layout_recovery.py` — 14 причинных регрессий (§10.1).
 - `ruff check src/ tests/` → clean.
+
+### Этап 8.2 (recovery round 2) — фактическое состояние
+
+- Ран `runs/stage7/2026-10-15-layout-recovery/`, тот же public runner.
+- **8 из 8 слайдов `resolved`** (ранее 3/8). `content_diff.json ok=true`
+  (0 changed / 0 duplicated / 0 missing / 0 dangling).
+- `measure.js` (TOOL_VERSION 0.2.0): переполнение определяется в одном
+  координатном пространстве — extent от origin компонента против внешнего
+  бокса.
+- `measurement.measure_components`: `MEASUREMENT_FACE_UNVERIFIED`, если
+  браузер не загрузил face (production-профиль).
+- `layout` (ENGINE_VERSION 1.9): коннектор с зоной — авторская геометрия;
+  `_cluster_placement` сохраняет взаимное положение непересекающихся
+  членов декоративной группы.
+- `composition`: surface/foreground/stroke токены зоны переносятся на каждый
+  компонент, а не только на authored rich-text блок.
+- `export_pipeline.emit_slide`: объявленная панель рисуется под содержимым
+  (underlay) независимо от source z-order.
+- Авторинг планов: `runs/stage7/2026-10-15-layout-recovery/scripts/author_plans.py`
+  (семантические группы → измерение → излучение зон), `run_build.py`
+  (прогон с трассировкой аллокации), `collect_evidence.py` (артефакты §12).
+- Тесты: `uv run pytest tests/gpn --no-cov` → **369 passed, 3 skipped**;
+  `ruff check src/ tests/` → clean.
+- Не выполнено в этом раунде: saved-geometry гейт, PowerPoint UI
+  round-trip, кандидаты c2/c3, dense-3x, fragmentation invariance,
+  create-writer smoke.
+
+## Stage 9 (2026-10-15) — universal authoring + visual repair, part 1
+
+Append-only. Facts added below; earlier lines are unchanged.
+
+- **Measurement contract**: `tools/layout/src/measure.js` `detectOverflow`
+  now compares outer-origin extents against the inner area in the same
+  origin (`right = w - rIns`, `bottom = h - bIns`). New response fields:
+  `inner_box_in_frame_pt`, `content_bounds_inner_pt`,
+  `logical_line_boxes_inner_pt`, `required_outer_height_pt`,
+  `excess_inner_pt`, `content_absent`. `line_count` counts logical lines.
+  `TOOL_VERSION = "0.3.0"`, `CALIBRATION_ID = "uncalibrated-v2-inner-outer"`,
+  so the measurement cache from earlier rounds no longer applies.
+  `occupied_height_pt` keeps its previous meaning (outer origin, top inset
+  included, bottom inset NOT).
+- **`gpn/text_presence.py`** (new): `inspect_saved_text_presence`,
+  `is_text_fit_applicable`, `read_saved_presence`. Presence is decided from
+  `a:t` / `a:fld` / `a:br` / bullet state and effective run fill — never from
+  text length, bbox area, colour or source id.
+- **`remeasure_saved_geometry`** report shape:
+  `{schema_version, applicable, measured[], measured_count,
+  not_applicable[{id,reason,presence,scope_excluded,scope_still_checked}],
+  unknown_state[], overflows[], skipped[], input_hashes, ok, checked_scopes,
+  unsupported_scopes}`.
+- **`gpn/visual_norm.py`** (new): `classify_visual_units`,
+  `plan_visual_normalization`, `resolve_brand_asset`, `analyze_image_alpha`,
+  `check_visual_representation`. `_apply_decor_fill_line` executes a plan and
+  no longer derives meaning from the source colour.
+- **`gpn/export_pipeline.py`**: `PainterEntry`, `build_painter_order`,
+  `_derive_underlay_map`, `_visual_normalization_plans`. One render order for
+  rich blocks and ordinary objects.
+- **`gpn/layout.py`**: `derive_overlap_permissions(scene)` + `OverlapPermission`
+  model; permissions follow the target tree, not a slide-wide cross product.
+- **`gpn/planner.py`**: `LayoutIntent.overlap_permissions` (typed).
+  `gpn/composition.py`: a bare `allowed_overlaps` pair without a typed
+  permission is refused with `OVERLAP_PERMISSION_UNJUSTIFIED`.
+- **`gpn/acceptance.py`**: `ProductSummary`, `build_product_summary`; `main()`
+  writes `product_summary.json` derived from the canonical acceptance.
+- **`gpn/restyle_runner.py`**: fail-closed scene validation
+  (`SCENE_CONTEXT_MISSING`), typed `CandidateAttemptResult` from
+  `_build_deck_candidate`, one independent attempt per candidate per slide,
+  `candidate_attempts.json`, eligibility gate in `_collect_eligible`.
+  Fixed `state.tasks` → `state.task_queue` and a `rules_path` unbound use.
+- **Tests**: `tests/gpn/test_stage11_universal.py` (24 cases). Full suite
+  392 passed / 4 skipped; `ruff check src/ tests/` clean.
+- **Not done yet**: typed `ResolvedTextSpec`, typed `layout_spec`/
+  `geometry_spec`/`surface_spec`, full NTC run through brief → concept →
+  scene → build → render → review → selection → acceptance, the other two
+  business inputs, create smokes, dense-3x and invariance controls, and the
+  §12 bundle.
+
+## Stage 10 (2026-10-16) — Unicode normalization + verification
+
+Append-only. Facts added below; earlier lines are unchanged.
+
+### Code changes
+- `document_ingest.py::_resolve`: Unicode NFC normalization for Cyrillic
+  filenames (Круглый_стол.pptx). Exact path first, then NFC match, then
+  single-glob NFC match. Multiple NFC matches raise `INPUT_AMBIGUOUS_UNICODE`.
+  Originals are never renamed.
+
+### Verification
+- Full test suite: **392 passed, 4 skipped** (no regressions).
+- `ruff check src/ tests/`: **clean**.

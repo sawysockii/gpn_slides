@@ -22,9 +22,24 @@ from typing import Any
 
 from .models import MeasurementRequest, MeasurementResponse
 
-TOOL_VERSION = "0.1.0"
+TOOL_VERSION = "0.3.0"
 PROTOCOL_SCHEMA = "1.0"
-CALIBRATION_ID = "uncalibrated-v1"
+# 0.3.0 — §5.1 coordinate contract, one documented space:
+#   * fragments/line boxes stay OUTER-origin relative (they include the top
+#     inset); the legacy `occupied_height_pt` keeps that exact meaning.
+#   * the fit test compares those extents against the inner content area
+#     expressed in the SAME origin: left=margins.l, top=margins.t,
+#     right=box.w-margins.r, bottom=box.h-margins.b. The pre-0.3.0 code
+#     compared against the outer border only, so a fragment could intrude
+#     into the right/bottom insets and never be reported; subtracting
+#     top/left a second time would double-charge them instead.
+#   * new fields `inner_box_in_frame_pt`, `content_bounds_inner_pt`,
+#     `logical_line_boxes_inner_pt`, `required_outer_height_pt` (both
+#     vertical insets charged once) and `excess_inner_pt`.
+#   * `line_count` counts logical lines, not the sum of each run's lines.
+# 0.2.0: overflow decided in one coordinate space (mixed-origin comparison
+# against the inner box charged the top padding twice).
+CALIBRATION_ID = "uncalibrated-v2-inner-outer"
 
 
 def _code_root() -> Path:
@@ -154,6 +169,36 @@ def _downgrade_unverified_faces(response: MeasurementResponse) -> None:
                 "cannot confirm geometry")
 
 
+def persist_measurement_pair(persist_dir: str | Path,
+                             key_hash: str,
+                             request: MeasurementRequest,
+                             response: dict[str, Any],
+                             cache_hit: bool) -> None:
+    """Write raw request/response evidence (§5.1, §12 bundle closure).
+
+    Content-addressed by key_hash: ``requests/<hash>.json`` carries the
+    canonical request plus its cache identity; ``responses/<hash>.json``
+    carries the raw tool response plus a cache_hit marker. A glob over
+    ``measurement/requests/*.json`` with zero files is an explicit
+    incomplete bundle, never a pass.
+    """
+    try:
+        base = Path(persist_dir)
+        (base / "requests").mkdir(parents=True, exist_ok=True)
+        (base / "responses").mkdir(parents=True, exist_ok=True)
+        (base / "requests" / f"{key_hash}.json").write_text(
+            json.dumps({"key_hash": key_hash,
+                        "cache_parts": cache_key_parts(request),
+                        "request": request.model_dump(mode="json")},
+                       ensure_ascii=False, indent=1), encoding="utf-8")
+        (base / "responses" / f"{key_hash}.json").write_text(
+            json.dumps({"key_hash": key_hash, "cache_hit": cache_hit,
+                        "response": response}, ensure_ascii=False),
+            encoding="utf-8")
+    except OSError:
+        pass
+
+
 def measure_components(
     request: MeasurementRequest,
     timeout_seconds: float = 120.0,
@@ -162,6 +207,7 @@ def measure_components(
     use_cache: bool = True,
     calibration_id: str = CALIBRATION_ID,
     debug_output_dir: str = "",
+    persist_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Measure components in Chromium; return response dict + manifest."""
     if not request.components:
@@ -173,6 +219,9 @@ def measure_components(
     if use_cache:
         hit = lookup_cache(key_hash, project_root)
         if hit is not None:
+            if persist_dir is not None:
+                persist_measurement_pair(persist_dir, key_hash, request,
+                                         hit["response"], True)
             return hit
 
     node = node_binary()
@@ -238,9 +287,64 @@ def measure_components(
                                    "; ".join(problems),
                                    {"stderr_tail": stderr[-2000:]})
         _downgrade_unverified_faces(response)
+        # A face the browser did not load and an item the measurer could
+        # not support are different facts with different fixes. Folding
+        # them together reported an unsupportable geometry (a non-positive
+        # inner box) as a font problem and failed whole slides for it
+        # (§5.2 unsupported state is honest; §5.3/U04 is about faces).
+        unverified_faces = sorted(
+            {alias for item in response.items
+             if item.confidence == "unsupported"
+             and any(issue.startswith("exact face not loaded")
+                     for issue in item.issues)
+             for alias in item.font_evidence}
+            | {alias for item in response.items for issue in item.issues
+               if issue.startswith("face not verified")
+               for alias in [issue.rsplit(": ", 1)[-1]]})
+        unsupported_items = sorted(
+            item.component_id for item in response.items
+            if item.confidence != "exact_browser"
+            and item.component_id not in {i.component_id for i in response.items
+                                         if any(x.startswith("face not verified")
+                                                for x in i.issues)}
+            and not any(issue.startswith("exact face not loaded")
+                        for issue in item.issues))
+        # §5.1/§12: a refused call is still evidence. Persist the raw pair
+        # before refusing, so the finding can be read back instead of
+        # leaving the next engineer with only a summary string.
+        if persist_dir is not None and (unverified_faces or unsupported_items):
+            persist_measurement_pair(persist_dir, key_hash, request,
+                                     response.model_dump(mode="json"), False)
+        if unverified_faces and request.profile_kind == "production":
+            # §5.3: a face the browser did not load means every number in
+            # this response came from a substituted face. Reporting them as
+            # measurements would be a fabricated default, so the whole call
+            # fails with the exact aliases instead.
+            raise MeasurementError(
+                "MEASUREMENT_FACE_UNVERIFIED",
+                "measurement ran with faces the browser did not load: "
+                + ", ".join(unverified_faces),
+                {"font_allowlist_roots":
+                 list((request.engine_options or {}).get(
+                     "allowlist_roots", []) or [])})
+        if unsupported_items and request.profile_kind == "production":
+            # The geometry offered was not measurable (e.g. a non-positive
+            # inner box). That is a layout authoring defect, named per
+            # component, not a rendering-trust defect.
+            raise MeasurementError(
+                "MEASUREMENT_ITEM_UNSUPPORTED",
+                "measurement could not support "
+                f"{len(unsupported_items)} component(s): "
+                + ", ".join(unsupported_items[:6]),
+                {"font_allowlist_roots":
+                 list((request.engine_options or {}).get(
+                     "allowlist_roots", []) or [])})
         out = response.model_dump(mode="json")
         if use_cache:
             store_cache(key_hash, parts, out, project_root)
+        if persist_dir is not None:
+            persist_measurement_pair(persist_dir, key_hash, request,
+                                     out, False)
         return {"manifest": {"key_hash": key_hash, "parts": parts,
                              "tool_exit": proc.returncode,
                              "stderr_tail": stderr[-2000:]},

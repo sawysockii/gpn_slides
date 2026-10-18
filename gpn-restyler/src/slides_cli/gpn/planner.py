@@ -14,7 +14,7 @@ import re
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -24,6 +24,7 @@ from .models import (
     CompiledOntology,
     ModelTask,
     ModelTaskResponse,
+    OverlapPermission,
     SemanticSlide,
     SlideIR,
     SourceLedger,
@@ -70,6 +71,11 @@ class LayoutZone(BaseModel):
     surface_token: str = ""
     foreground_token: str = ""
     stroke_token: str = ""
+    # Authored keys are semantic unit IDs; the boundary lowers them to
+    # source object IDs once. Values are exact loaded ontology role tokens.
+    ref_roles: dict[str, str] = Field(default_factory=dict)
+    paragraph_groups: list[list[str]] = Field(default_factory=list)
+    inline_separator: Literal["", " "] = " "
 
 
 class LayoutRelation(BaseModel):
@@ -88,6 +94,11 @@ class LayoutIntent(BaseModel):
 
     slide_id: str
     candidate_id: str = ""
+    # Slide backdrop as a normative palette token (§6.4: a white logo needs
+    # its dark surface, a dark slide needs light text). Empty = slide
+    # default (white). Validated against the loaded palette like every
+    # other token — never a literal RGB in the scene.
+    slide_background_token: str = ""
     content_refs: list[str] = Field(default_factory=list)
     communication_job: str = ""
     reading_order: list[str] = Field(default_factory=list)
@@ -100,6 +111,12 @@ class LayoutIntent(BaseModel):
     # its texts). Exact object-id pairs, intent origin; the geometry
     # validator honors only these — never a blanket allow-overlap.
     allowed_overlaps: list[list[str]] = Field(default_factory=list)
+    # §5.4: typed overlap permissions. Every entry names the surface, the
+    # content, the relation kind, the scope and the evidence. A pair in
+    # `allowed_overlaps` without a matching permission is refused, so a
+    # cross-product of surfaces x contents can no longer hide an unrelated
+    # future occlusion.
+    overlap_permissions: list[OverlapPermission] = Field(default_factory=list)
     novel_recipe: str = ""
     uncertainties: list[str] = Field(default_factory=list)
     rationale: str = ""
@@ -230,8 +247,7 @@ def build_intent_schema(
                         "w_pct": {"type": "number", "exclusiveMinimum": 0, "maximum": 100},
                         "h_pct": {"type": "number", "exclusiveMinimum": 0, "maximum": 100},
                         "role": (
-                            {"type": "string", "enum": role_ids}
-                            if role_ids else {"type": "string"}
+                            {"type": "string", "enum": role_ids} if role_ids else {"type": "string"}
                         ),
                         "content_refs": {"type": "array", "items": ref_spec},
                     },
@@ -256,8 +272,7 @@ def build_intent_schema(
             "operators": {
                 "type": "array",
                 "items": (
-                    {"type": "string", "enum": operator_ids}
-                    if operator_ids else {"type": "string"}
+                    {"type": "string", "enum": operator_ids} if operator_ids else {"type": "string"}
                 ),
                 "uniqueItems": True,
             },
@@ -267,8 +282,12 @@ def build_intent_schema(
             "rationale": {"type": "string"},
         },
         "required": [
-            "slide_id", "content_refs", "communication_job",
-            "reading_order", "zones", "operators",
+            "slide_id",
+            "content_refs",
+            "communication_job",
+            "reading_order",
+            "zones",
+            "operators",
         ],
         "additionalProperties": False,
     }
@@ -453,17 +472,14 @@ def validate_planned_intent(
     if intent.novel_recipe:
         unresolved.append("novel_recipe_requires_extension_review")
         proposes_style = any(
-            marker in intent.novel_recipe.lower()
-            for marker in ("color", "token", "font")
+            marker in intent.novel_recipe.lower() for marker in ("color", "token", "font")
         )
         if (
             rules is not None
             and not rules.extension_contract.style_new_tokens_allowed
             and proposes_style
         ):
-            hard.append(
-                "novel_recipe proposes style tokens, forbidden by extension contract"
-            )
+            hard.append("novel_recipe proposes style tokens, forbidden by extension contract")
 
     if source is None:
         unresolved.append("source_ir_not_available")
@@ -539,9 +555,12 @@ def select_planning_candidate(
     previous_sigs = set(previous or [])
 
     acceptable = [
-        c for c in evaluations
-        if c.valid and c.intent is not None
-        and c.validation is not None and c.validation.planning_acceptable
+        c
+        for c in evaluations
+        if c.valid
+        and c.intent is not None
+        and c.validation is not None
+        and c.validation.planning_acceptable
     ]
     if not acceptable:
         return SelectedCandidate(
@@ -578,10 +597,7 @@ def select_planning_candidate(
     return SelectedCandidate(
         candidate=best,
         status="selected_pending_measurement",
-        reason=(
-            "accepted on planning scope; readability/overflow pending Stage 5 "
-            "measurement"
-        ),
+        reason=("accepted on planning scope; readability/overflow pending Stage 5 measurement"),
         scores=best_scores,
     )
 
@@ -646,9 +662,7 @@ class LocalPlanner:
         bounded repair requests per candidate with the exact errors.
         """
         candidates: list[IntentCandidate] = []
-        schema_hash = hashlib.sha256(
-            json.dumps(schema, sort_keys=True).encode()
-        ).hexdigest()
+        schema_hash = hashlib.sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest()
         accepted_signatures: list[str] = list(packet.previous_signatures)
 
         for idx in range(candidate_count):
@@ -656,9 +670,7 @@ class LocalPlanner:
                 break
 
             request_id = f"plan_{packet.packet_id}_{idx}"
-            messages = _build_messages(
-                packet, schema, self.system_prompt, idx, accepted_signatures
-            )
+            messages = _build_messages(packet, schema, self.system_prompt, idx, accepted_signatures)
             candidate, attempt_ids = self._generate_and_validate(
                 request_id=request_id,
                 packet=packet,
@@ -705,8 +717,7 @@ class LocalPlanner:
                 response_schema=schema if self.model_config.use_json_schema != "never" else None,
                 model_config=self.model_config,
                 request_id=(
-                    request_id if repair_round == 0
-                    else f"{request_id}_repair{repair_round}"
+                    request_id if repair_round == 0 else f"{request_id}_repair{repair_round}"
                 ),
                 packet_hash=packet.source_hash,
                 schema_hash=schema_hash,
@@ -737,9 +748,7 @@ class LocalPlanner:
                     repair_round += 1
                     with self._lock:
                         self._schema_repairs += 1
-                    current_messages = current_messages + [
-                        _repair_message(f"invalid JSON: {exc}")
-                    ]
+                    current_messages = current_messages + [_repair_message(f"invalid JSON: {exc}")]
                     continue
                 with self._lock:
                     self._rejected += 1
@@ -858,23 +867,31 @@ def _build_messages(
     rule_slice = packet.rule_slice
     rules_text = ""
     if rule_slice:
-        rules_text = json.dumps({
-            "global_rules": rule_slice.global_rules,
-            "role_records": rule_slice.role_records,
-            "color_policy": rule_slice.color_policy,
-            "list_policy": rule_slice.list_policy,
-            "extension_policy": rule_slice.extension_policy,
-            "available_operators": rule_slice.available_operators,
-            "unresolved_norms": rule_slice.unresolved_norms,
-        }, ensure_ascii=False, indent=1)
+        rules_text = json.dumps(
+            {
+                "global_rules": rule_slice.global_rules,
+                "role_records": rule_slice.role_records,
+                "color_policy": rule_slice.color_policy,
+                "list_policy": rule_slice.list_policy,
+                "extension_policy": rule_slice.extension_policy,
+                "available_operators": rule_slice.available_operators,
+                "unresolved_norms": rule_slice.unresolved_norms,
+            },
+            ensure_ascii=False,
+            indent=1,
+        )
 
     view_text = ""
     if packet.view:
-        view_text = json.dumps({
-            "objects": packet.view.objects,
-            "semantic_slots": packet.view.semantic_slots,
-            "uncertainties": packet.view.uncertainties,
-        }, ensure_ascii=False, indent=1)
+        view_text = json.dumps(
+            {
+                "objects": packet.view.objects,
+                "semantic_slots": packet.view.semantic_slots,
+                "uncertainties": packet.view.uncertainties,
+            },
+            ensure_ascii=False,
+            indent=1,
+        )
 
     schema_text = json.dumps(schema, ensure_ascii=False, indent=1)
 
@@ -884,13 +901,17 @@ def _build_messages(
             "role": "user",
             "content": (
                 "## Ontology Snapshot\n\n"
-                + json.dumps({
-                    "snapshot_id": packet.snapshot_id,
-                    "ontology_corpus_hash": packet.ontology_corpus_hash,
-                    "capabilities": packet.capabilities,
-                    "preservation_policy": packet.preservation_policy,
-                    "budget": packet.budget,
-                }, ensure_ascii=False, indent=1)
+                + json.dumps(
+                    {
+                        "snapshot_id": packet.snapshot_id,
+                        "ontology_corpus_hash": packet.ontology_corpus_hash,
+                        "capabilities": packet.capabilities,
+                        "preservation_policy": packet.preservation_policy,
+                        "budget": packet.budget,
+                    },
+                    ensure_ascii=False,
+                    indent=1,
+                )
             ),
         },
         {"role": "user", "content": f"## Planning Rules\n\n{rules_text}"},
@@ -899,18 +920,20 @@ def _build_messages(
     ]
     if candidate_index > 0:
         prior = ", ".join(previous_signatures or packet.previous_signatures)
-        messages.append({
-            "role": "user",
-            "content": (
-                "Previous candidate composition signatures: "
-                f"[{prior}]. Propose a DIFFERENT justified composition "
-                f"(candidate {candidate_index + 1}): different topology/grouping/"
-                "reading order where the source semantics allow it. Do not "
-                "repeat the same signature. Do not repeat the same topology "
-                "just to satisfy the request — keep the composition justified "
-                "by the slide material."
-            ),
-        })
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "Previous candidate composition signatures: "
+                    f"[{prior}]. Propose a DIFFERENT justified composition "
+                    f"(candidate {candidate_index + 1}): different topology/grouping/"
+                    "reading order where the source semantics allow it. Do not "
+                    "repeat the same signature. Do not repeat the same topology "
+                    "just to satisfy the request — keep the composition justified "
+                    "by the slide material."
+                ),
+            }
+        )
     return messages
 
 
@@ -1007,9 +1030,7 @@ def validate_scene_response(
             issues.append(f"slide_id mismatch: {intent.slide_id} != {ck.source_slide_id}")
         if intent.candidate_id and intent.candidate_id != ck.candidate_id:
             candidate_match = False
-            issues.append(
-                f"candidate_id mismatch: {intent.candidate_id} != {ck.candidate_id}"
-            )
+            issues.append(f"candidate_id mismatch: {intent.candidate_id} != {ck.candidate_id}")
 
     zone_ids = [z.zone_id for z in intent.zones]
     if len(zone_ids) != len(set(zone_ids)):
@@ -1018,7 +1039,11 @@ def validate_scene_response(
         issues.append(f"duplicate zone_id: {', '.join(dupes)}")
 
     known_roles = set(rules.roles.keys()) if rules else set()
-    known_colors = set(rules.colors.keys()) if rules else set()
+    known_colors = (set(rules.colors) | set(rules.conditional_colors)) if rules else set()
+    bg_token = str(getattr(intent, "slide_background_token", "") or "")
+    if bg_token and known_colors and bg_token not in known_colors:
+        role_tokens_valid = False
+        issues.append(f"unknown slide_background_token {bg_token!r}")
     for zone in intent.zones:
         if zone.role and known_roles and zone.role not in known_roles:
             role_tokens_valid = False
@@ -1027,13 +1052,14 @@ def validate_scene_response(
             token = getattr(zone, token_field, "")
             if token and known_colors and token not in known_colors:
                 role_tokens_valid = False
-                issues.append(
-                    f"unknown {token_field} {token!r} in zone {zone.zone_id}"
-                )
+                issues.append(f"unknown {token_field} {token!r} in zone {zone.zone_id}")
         for pct in ("x_pct", "y_pct", "w_pct", "h_pct"):
             val = getattr(zone, pct, 0)
-            if (not isinstance(val, (int, float)) or val != val
-                    or val in (float("inf"), float("-inf"))):
+            if (
+                not isinstance(val, (int, float))
+                or val != val
+                or val in (float("inf"), float("-inf"))
+            ):
                 geometry_valid = False
                 issues.append(f"non-finite {pct} in zone {zone.zone_id}: {val}")
 
@@ -1042,18 +1068,23 @@ def validate_scene_response(
     missing_units = required_unit_ids - zone_refs
     if missing_units:
         spans_covered = False
-        issues.append(
-            f"missing required units: {', '.join(sorted(missing_units)[:10])}")
+        issues.append(f"missing required units: {', '.join(sorted(missing_units)[:10])}")
 
-    intent_relation_pairs = {(r.from_ref, r.to_ref) for r in intent.relations}
     for rel in semantic.relations:
-        if rel.preservation == "required":
-            pair = (rel.from_unit_ids[0] if rel.from_unit_ids else "",
-                    rel.to_unit_ids[0] if rel.to_unit_ids else "")
-            if (pair not in intent_relation_pairs
-                    and (pair[1], pair[0]) not in intent_relation_pairs):
-                relations_covered = False
-                issues.append(f"missing required relation {rel.id}: {pair}")
+        if rel.preservation != "required":
+            continue
+        mapped = [r for r in intent.relations if rel.id in r.evidence]
+        actual = {(r.from_ref, r.to_ref) for r in mapped}
+        required = {(a, b) for a in rel.from_unit_ids for b in rel.to_unit_ids}
+        if rel.directed is not True:
+            actual |= {(b, a) for a, b in actual}
+        missing = required - actual
+        if missing:
+            relations_covered = False
+            issues.append(
+                f"missing required relation mappings {rel.id}: {sorted(missing)}; "
+                "retain its relation ID in evidence and its semantic direction"
+            )
 
     if concept.concept_sha256:
         plan_str = json.dumps(scene_plan, sort_keys=True)
@@ -1067,6 +1098,12 @@ def validate_scene_response(
                 no_source_id_as_group = False
                 issues.append(f"source slide id used as content_ref in zone {zone.zone_id}")
 
+    from .scene_contract import scene_token_errors
+
+    nested_errors = scene_token_errors(intent, rules)
+    if nested_errors:
+        role_tokens_valid = False
+        issues.extend(e for e in nested_errors if e not in issues)
     hard = list(issues)
     valid = (
         schema_valid

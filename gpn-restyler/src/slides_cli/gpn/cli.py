@@ -167,6 +167,24 @@ def _progress(msg: str) -> None:
     print(msg, file=sys.stderr)
 
 
+def _ontology_root_near(path: Path) -> Path | None:
+    """Walk up from an input file to the directory holding the ontology corpus.
+
+    The corpus (not the repository) defines where slides/slides_examples are
+    read from, so a bare absolute input path is enough evidence. Returns None
+    when no ancestor carries an ontology corpus; the caller keeps its default.
+    """
+    try:
+        start = path if path.is_dir() else path.parent
+    except (OSError, ValueError):
+        return None
+    for candidate in [start, *start.parents]:
+        if (candidate / "ontology").is_dir() and \
+                any((candidate / "ontology").glob("*.json")):
+            return candidate
+    return None
+
+
 def _load_config(args: argparse.Namespace) -> tuple[Any, Path]:
     from .config import load_config
 
@@ -175,7 +193,14 @@ def _load_config(args: argparse.Namespace) -> tuple[Any, Path]:
         config = load_config(args.config, project_root=project_root)
         return config, config.project_root
     if project_root is None:
-        project_root = Path(".").resolve()
+        # The repo working directory is not the project root: grounding on it
+        # resolves no ontology and fails later as an opaque profile error.
+        # Prefer the input's own ontology root when the corpus is reachable.
+        source_arg = getattr(args, "source", None)
+        inferred = None
+        if source_arg:
+            inferred = _ontology_root_near(Path(source_arg))
+        project_root = inferred or Path(".").resolve()
     else:
         project_root = Path(project_root).expanduser().resolve()
     default_toml = project_root / "config" / "gpn.toml"

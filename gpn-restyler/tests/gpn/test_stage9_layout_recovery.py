@@ -243,26 +243,40 @@ def test_line_stroke_footprint_removes_false_conflicts() -> None:
 
 
 def test_text_shaped_line_still_reports_direction_conflict() -> None:
-    """A genuinely unplaceable band still reports a scoped conflict.
+    """A genuinely unplaceable band still reports a scoped refusal.
 
-    The footprint fix must not become a blanket "allow overlap": when no
-    legal placement exists at all, the finding is still reported, still
-    marked as a directional-search limit, and still scoped to the node.
+    The measured solver must not become a blanket "allow overlap". When no
+    legal placement exists at all, the result is an explicit refusal whose
+    scope is the supplied measured model, and nothing is silently stacked.
     """
+    from slides_cli.gpn.layout import _boxes_overlap
+
     content_box = {"x": 0.0, "y": 0.0, "w": 960.0, "h": 496.678}
     boxes = {
         "line": {"x": 0.0, "y": 100.0, "w": 960.0, "h": 31.787},
         "wide_a": {"x": 0.0, "y": 120.0, "w": 960.0, "h": 200.0},
         "wide_b": {"x": 0.0, "y": 200.0, "w": 960.0, "h": 200.0},
     }
-    _, moves = _resolve_hint_overlaps(
-        boxes, ["line", "wide_a", "wide_b"], content_box, node_kinds={})
+    order = ["line", "wide_a", "wide_b"]
 
-    limited = [m for m in moves if m.get("result") == "no_room_below"]
-    assert limited
-    assert all(m.get("directional_search_only") is True for m in limited)
-    # The conflict names a node; it never claims the slide is physically full.
-    assert all(m.get("target") for m in limited)
+    # This exact geometry DOES fit a frame that can hold it, and the solver
+    # finds the placement: the refusal below is about one finite model, never
+    # a claim that the slide itself is physically full.
+    fitted, fit_moves = _resolve_hint_overlaps(
+        boxes, order, dict(content_box, h=520.0), node_kinds={})
+    assert fit_moves[0]["status"] == "OPTIMAL", fit_moves
+    assert not _boxes_overlap(fitted["line"], fitted["wide_a"])
+    assert not _boxes_overlap(fitted["wide_a"], fitted["wide_b"])
+
+    # A frame that genuinely cannot hold the stack is refused, scoped, and
+    # leaves every box exactly as authored instead of overlapping it.
+    tight = {"x": 0.0, "y": 0.0, "w": 960.0, "h": 100.0}
+    refused, moves = _resolve_hint_overlaps(boxes, order, tight, node_kinds={})
+    limited = [m for m in moves if m.get("result") == "constraint_unsatisfied"]
+    assert limited, moves
+    assert all(m.get("status") == "INFEASIBLE" for m in limited)
+    assert all(m.get("scope") for m in limited)
+    assert refused == boxes
 
 
 def test_connector_footprint_has_no_minimum_body_height() -> None:
@@ -301,8 +315,13 @@ def test_legal_row_placement_is_found_instead_of_global_infeasible() -> None:
     assert placed["B"]["x"] >= content_box["x"]
     assert (placed["B"]["x"] + placed["B"]["w"]
             <= content_box["x"] + content_box["w"] + 0.75)
-    assert not [m for m in moves if m.get("result") == "no_room_below"], moves
-    assert any(m.get("action") == "reorient" for m in moves), moves
+    assert not [m for m in moves if m.get("result") in
+                ("no_room_below", "constraint_unsatisfied")], moves
+    # The legal row is proved by a real solver call whose scope is stated,
+    # not by a declared "reorient" heuristic move.
+    assert [m for m in moves if m.get("action") == "constraint_layout"], moves
+    assert all(m.get("solver_calls", 0) >= 1 for m in moves), moves
+    assert all(m.get("scope") for m in moves), moves
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +364,14 @@ def test_rich_block_paragraphs_keep_source_spans(tmp_path: Path) -> None:
     assert len(paras) == 2
     assert [p["source_ref"] for p in paras] == refs
     assert [p["source_paragraph_index"] for p in paras] == [0, 0]
-    assert all(run["id"].startswith(p["source_ref"])
+    # Runs are addressed by their exact source paragraph atom, not by a
+    # truncated source-object prefix, and each run still carries the source
+    # object it came from.
+    assert all(run["id"].startswith(p["id"] + "/")
+               for p in paras for run in p["runs"])
+    assert all(run["source_ref"] == p["source_ref"]
+               for p in paras for run in p["runs"])
+    assert all(run["source_para_id"] == p["id"]
                for p in paras for run in p["runs"])
 
 
@@ -435,3 +461,213 @@ def test_declared_surface_token_values_come_from_json(token_field: str) -> None:
     palette = set(_rules().colors)
     assert palette, "compiled ontology must expose a palette"
     assert all(isinstance(name, str) and name for name in palette)
+
+# ---------------------------------------------------------------------------
+# 9. authored zone heights are hints; measured needs are the requirement
+#    (universal-authoring spec §5.5)
+# ---------------------------------------------------------------------------
+
+def test_authored_columns_separate_adjacent_lanes_and_stacked_bands() -> None:
+    """A full-width band is not the same column as the lanes it spans."""
+    from slides_cli.gpn.layout import _authored_columns
+
+    boxes = {
+        # right lane, two stacked frames
+        "r1": {"x": 650.0, "y": 100.0, "w": 220.0, "h": 12.0},
+        "r2": {"x": 650.0, "y": 200.0, "w": 220.0, "h": 12.0},
+        # left lane, two stacked frames
+        "l1": {"x": 40.0, "y": 100.0, "w": 550.0, "h": 12.0},
+        "l2": {"x": 40.0, "y": 200.0, "w": 550.0, "h": 12.0},
+        # full-width band under both lanes
+        "band": {"x": 40.0, "y": 320.0, "w": 870.0, "h": 12.0},
+    }
+    columns = _authored_columns(boxes, sorted(boxes))
+    grouped = {frozenset(c) for c in columns}
+    assert frozenset({"l1", "l2"}) in grouped
+    assert frozenset({"r1", "r2"}) in grouped
+    # The band overlaps each lane by less than 80% of its own width, so it
+    # must not be folded into either lane's column.
+    assert frozenset({"band"}) in grouped
+    assert len(columns) == 3
+
+
+def test_reconcile_gives_each_frame_its_measured_need() -> None:
+    """Authored 12pt bands become the height their own text measures."""
+    from slides_cli.gpn.layout import reconcile_hinted_heights
+
+    content_box = {"x": 0.0, "y": 0.0, "w": 960.0, "h": 500.0}
+    boxes = {
+        "a": {"x": 40.0, "y": 0.0, "w": 800.0, "h": 12.0},
+        "b": {"x": 40.0, "y": 300.0, "w": 800.0, "h": 12.0},
+        "c": {"x": 40.0, "y": 480.0, "w": 800.0, "h": 12.0},
+    }
+    needs = {"a": 40.0, "b": 30.0, "c": 20.0}
+
+    out, moves, findings = reconcile_hinted_heights(boxes, needs, content_box)
+
+    assert not findings
+    assert out["a"]["h"] == pytest.approx(40.0)
+    assert out["b"]["h"] == pytest.approx(30.0)
+    assert out["c"]["h"] == pytest.approx(20.0)
+    assert out["a"]["y"] == 0.0
+    # Column keeps its authored bottom: the last frame ends at the
+    # authored span bottom, so the design's overall extent is preserved.
+    assert abs(out["c"]["y"] + out["c"]["h"] - 492.0) < 1.0
+    assert {m["target"] for m in moves} == {"a", "b", "c"}
+
+
+def test_reconcile_reports_real_capacity_conflict_instead_of_clamping() -> None:
+    """A lane blocked below still cannot hold its text: report, not squeeze."""
+    from slides_cli.gpn.layout import reconcile_hinted_heights
+
+    content_box = {"x": 0.0, "y": 0.0, "w": 960.0, "h": 500.0}
+    boxes = {
+        "a": {"x": 40.0, "y": 0.0, "w": 200.0, "h": 30.0},
+        "b": {"x": 40.0, "y": 40.0, "w": 200.0, "h": 30.0},
+        # a full-width band closes the lane at y=70
+        "band": {"x": 40.0, "y": 70.0, "w": 880.0, "h": 10.0},
+    }
+    needs = {"a": 200.0, "b": 200.0}
+
+    out, moves, findings = reconcile_hinted_heights(boxes, needs, content_box)
+
+    assert not moves, "an infeasible column must not be silently rewritten"
+    assert any(f.startswith("CAPACITY_COLUMN_CONFLICT") for f in findings)
+    assert out == boxes
+
+
+def test_free_horizontal_run_claims_adjacent_air_but_never_loses_the_frame() -> None:
+    """Width redistribution grows the authored frame; it never moves it."""
+    from slides_cli.gpn.layout import free_horizontal_run
+
+    content_box = {"x": 0.0, "y": 0.0, "w": 960.0, "h": 540.0}
+    box = {"x": 100.0, "y": 100.0, "w": 300.0, "h": 40.0}
+
+    run = free_horizontal_run(box, [], content_box, height_pt=40.0)
+
+    assert run is not None
+    assert run["x"] == box["x"], "the authored frame must stay put"
+    assert abs(run["w"] - 860.0) < 0.01
+
+    # An obstacle right of the frame caps how much air can be claimed.
+    capped = free_horizontal_run(box, [{"x": 700.0, "y": 90.0, "w": 100.0,
+                                        "h": 60.0}], content_box,
+                                 height_pt=40.0)
+    assert capped is not None
+    assert abs(capped["w"] - (700.0 - 7.2 - 100.0)) < 0.01
+
+    # An obstacle inside the authored frame leaves no run at all: it is not
+    # a licence to move the frame sideways.
+    assert free_horizontal_run(box, [{"x": 200.0, "y": 90.0, "w": 100.0,
+                                      "h": 60.0}], content_box,
+                               height_pt=40.0) is None
+
+
+def test_container_follows_the_text_it_was_composed_for() -> None:
+    """A surface keeps its padding instead of being left as an empty frame."""
+    from slides_cli.gpn.layout import containers_follow_children
+
+    # Authored panel 40..80 around text 50..60: 10pt above, 20pt below.
+    boxes = {
+        "panel": {"x": 40.0, "y": 40.0, "w": 600.0, "h": 40.0},
+        "text": {"x": 60.0, "y": 50.0, "w": 560.0, "h": 40.0},
+        "loose": {"x": 800.0, "y": 40.0, "w": 100.0, "h": 40.0},
+    }
+    authored = {
+        "panel": {"x": 40.0, "y": 40.0, "w": 600.0, "h": 40.0},
+        "text": {"x": 60.0, "y": 50.0, "w": 560.0, "h": 10.0},
+        "loose": {"x": 800.0, "y": 40.0, "w": 100.0, "h": 40.0},
+    }
+
+    out, moves = containers_follow_children(boxes, authored, {"text"})
+
+    assert abs(out["panel"]["y"] - 40.0) < 0.01
+    assert abs(out["panel"]["h"] - 70.0) < 0.01
+    # A frame that never held text does not chase anything.
+    assert out["loose"] == boxes["loose"]
+    assert [m["target"] for m in moves] == ["panel"]
+
+
+# ---------------------------------------------------------------------------
+# 10. a text frame is always measurable (universal-authoring spec §5.1)
+# ---------------------------------------------------------------------------
+
+def test_floor_text_frame_grows_a_frame_under_its_own_insets() -> None:
+    """An authored band thinner than its insets is not measured as-is.
+
+    Inside a 4.97pt box the inner area is negative, which the measurer
+    correctly refuses; the contract is that the frame reaches one real
+    line before it is measured, so the refusal names an authoring defect
+    instead of masquerading as a text fit or a font failure.
+    """
+    from slides_cli.gpn.units import floor_text_frame
+
+    margins = {"l": 7.2, "r": 7.2, "t": 3.6, "b": 3.6}
+    boxed = floor_text_frame({"x": 10.0, "y": 10.0, "w": 400.0, "h": 4.97},
+                             margins, 14.4)
+    assert boxed["h"] == 3.6 + 3.6 + 14.4
+    assert boxed["h"] - margins["t"] - margins["b"] >= 14.4
+    assert floor_text_frame(
+        {"x": 0.0, "y": 0.0, "w": 400.0, "h": 60.0}, margins,
+        14.4)["h"] == 60.0
+    assert floor_text_frame(
+        {"x": 0.0, "y": 0.0, "w": 3.0, "h": 60.0}, margins,
+        14.4)["w"] > 7.2 + 7.2
+
+
+def test_unsupported_item_is_not_reported_as_a_font_failure() -> None:
+    """A geometry-driven refusal and a font refusal are different facts.
+
+    Folding them together made a non-positive inner box abort whole
+    slides as ``MEASUREMENT_FACE_UNVERIFIED``, naming font aliases that
+    had in fact loaded.
+    """
+    from slides_cli.gpn.measurement import _downgrade_unverified_faces
+    from slides_cli.gpn.models import MeasurementResponse
+
+    def _item(cid: str, *, confidence: str, issues: list[str],
+              evidence: list[str]) -> dict:
+        return {"component_id": cid, "source_ref": "",
+                "available_inner_box_pt": {"x": 0, "y": 0, "w": 10, "h": 0},
+                "inner_box_in_frame_pt": {"x": 0, "y": 0, "w": 10, "h": 0},
+                "content_bounds_inner_pt": {"x": 0, "y": 0, "w": 0, "h": 0},
+                "logical_line_boxes_inner_pt": [], "occupied_height_pt": 0.0,
+                "required_outer_height_pt": 0.0, "intrinsic_min_width_pt": 0.0,
+                "excess_pt": {"x": 0.0, "y": 0.0},
+                "excess_inner_pt": {"x": 0.0, "y": 0.0},
+                "logical_bounds_pt": {"x": 0, "y": 0, "w": 0, "h": 0},
+                "intrinsic_preferred_width_pt": 0.0,
+                "overflow_x": False, "overflow_y": False,
+                "overflow_inner_x": False, "overflow_inner_y": False,
+                "content_absent": False,
+                "fragments": [], "line_count": 0, "paragraph_count": 1,
+                "text_origin_x_pt": 0.0, "applied_transforms": [],
+                "font_evidence": evidence, "confidence": confidence,
+                "issues": issues}
+
+    face = {"alias": "A", "requested_path": "/f.otf", "expected_sha256": "a",
+            "actual_sha256": "a", "load_status": "loaded",
+            "glyph_probe": {}, "synthesis_detected": False, "issues": []}
+
+    def _response(items: list[dict]) -> MeasurementResponse:
+        return MeasurementResponse.model_validate({
+            "schema_version": "1.0", "request_id": "r", "request_hash": "",
+            "engine": {"tool": "t", "playwright": "p", "chromium": "c",
+                       "elapsed_ms": "1"},
+            "font_load": {"faces": [face], "all_loaded": True, "issues": []},
+            "items": items, "issues": []})
+
+    geometry = _response([_item("c1", confidence="unsupported",
+                                issues=["inner_box_non_positive: 10x-2pt"],
+                                evidence=["A"])])
+    _downgrade_unverified_faces(geometry)
+    assert geometry.items[0].confidence == "unsupported"
+    assert not any(i.startswith("face not verified")
+                   for i in geometry.items[0].issues)
+
+    font = _response([_item("c2", confidence="exact_browser",
+                            issues=["face not verified: A"],
+                            evidence=["A"])])
+    _downgrade_unverified_faces(font)
+    assert any(i.startswith("face not verified")
+               for i in font.items[0].issues)

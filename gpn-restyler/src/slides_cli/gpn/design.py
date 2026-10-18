@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -48,6 +49,11 @@ DESIGN_DIMENSION_FAMILIES: tuple[str, ...] = (
 
 def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _safe(value: str) -> str:
+    """Filesystem-safe token for a task id (task ids may contain '/' and ':')."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-")
 
 
 def _write_packet(run_dir: Path, rel: str, payload: dict) -> Path:
@@ -100,11 +106,15 @@ def build_slide_design_brief(
                             "visual_encoding_candidates",
                             "forbidden_inferences"],
     }
-    packet = _write_packet(run_dir, "model_requests/design_brief.json",
-                           packet_payload) if run_dir else None
+    rid = request_id or _sha(f"brief:{semantic_slide.source_slide_id}")
+    # §3.4: immutable, unique packet path per task. A single shared
+    # "design_brief.json" meant the last slide overwrote the previous
+    # packet, so a reviewer could only ever see one slide's brief.
+    packet = _write_packet(
+        run_dir, f"model_requests/{_safe(rid)}.json", packet_payload
+    ) if run_dir else None
     return ModelTask(
-        request_id=request_id or _sha(
-            f"brief:{semantic_slide.source_slide_id}"),
+        request_id=rid,
         kind=ModelTaskKind.DESIGN_BRIEF,
         input_fingerprint=_sha(json.dumps(
             semantic_slide.model_dump(mode="json"),
@@ -143,10 +153,12 @@ def generate_visual_concepts(
                           "path or dominance — number/header stacking "
                           "shifts are not new concepts",
     }
-    packet = _write_packet(run_dir, "model_requests/visual_concepts.json",
-                           packet_payload) if run_dir else None
+    rid = request_id or _sha(f"concepts:{brief.slide_id}")
+    packet = _write_packet(
+        run_dir, f"model_requests/{_safe(rid)}.json", packet_payload
+    ) if run_dir else None
     return ModelTask(
-        request_id=request_id or _sha(f"concepts:{brief.slide_id}"),
+        request_id=rid,
         kind=ModelTaskKind.VISUAL_CONCEPT_GENERATION,
         input_fingerprint=brief.brief_sha256 or _sha(
             json.dumps(brief.model_dump(mode="json"),

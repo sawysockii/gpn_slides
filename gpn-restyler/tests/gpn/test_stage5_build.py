@@ -234,7 +234,10 @@ def test_remeasurement_uses_saved_styles(tmp_path: Path) -> None:
 
     rep = remeasure_saved_geometry(_After(), bundle, measurer,
                                    {"font_allowlist_roots": []})
-    assert rep["measured"] == 0
+    # §5.2 report shape: measured is a list of component ids, kept apart
+    # from not_applicable / unknown_state with reasons.
+    assert rep["measured"] == []
+    assert rep["applicable"] == []
     assert rep["skipped"]
     assert rep["ok"] is False
 

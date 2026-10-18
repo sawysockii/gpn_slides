@@ -49,6 +49,26 @@ def css_px_to_pt(value: float, px_per_in: float) -> float:
     return value * PT_PER_IN / px_per_in
 
 
+def floor_text_frame(box: dict, margins: dict, line_pt: float) -> dict:
+    """Grow a text frame until its inner area can hold one real line.
+
+    A frame shorter than its own insets has a non-positive inner box:
+    the measurer cannot place anything there, and reporting that as a text
+    fit would be fabricated. Both the authored-zone path and the
+    preserve-structure path go through this one contract, so a text frame
+    is always measured at a physically meaningful size; its real need comes
+    from the reconciliation pass that follows (§5.1, §5.5).
+    """
+    out = dict(box)
+    out["h"] = max(float(out.get("h", 0.0)),
+                   float(margins.get("t", 0.0))
+                   + float(margins.get("b", 0.0)) + float(line_pt))
+    out["w"] = max(float(out.get("w", 0.0)),
+                   float(margins.get("l", 0.0))
+                   + float(margins.get("r", 0.0)) + 8.0)
+    return out
+
+
 def pct_to_rect(box: RectPct, parent: RectPt) -> RectPt:
     """Map a percent box onto its parent rectangle (0–100 units)."""
     return RectPt(

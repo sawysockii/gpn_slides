@@ -17,6 +17,7 @@ import logging
 import posixpath
 import tempfile
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -40,8 +41,7 @@ from .transplant import TransplantContext, load_source_package
 
 log = logging.getLogger(__name__)
 
-SUPPORTED_EMIT_KINDS = {"text", "table", "chart", "shape", "group", "image",
-                        "connector", "unknown"}
+SUPPORTED_EMIT_KINDS = {"text", "table", "chart", "shape", "group", "image", "connector", "unknown"}
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +94,7 @@ def require_harness_or_deferred(provider: str) -> None:
 # Resolver: accepted LayoutIntent → ResolvedSlide (never raw model JSON).
 # ---------------------------------------------------------------------------
 
+
 def resolve_slides_from_intents(
     intents: list[dict[str, Any]],
     deck: Any,
@@ -116,15 +117,19 @@ def resolve_slides_from_intents(
         intent = body if isinstance(body, LayoutIntent) else LayoutIntent.model_validate(body)
         source = slides_by_id.get(intent.slide_id)
         if source is None:
-            out.append(ResolvedSlide(
-                slide_id=intent.slide_id, source_slide_id=intent.slide_id,
-                intent_id=intent.candidate_id,
-                generation_origin=str(raw.get("generation_origin", "harness_model"))
-                if isinstance(raw, dict) else "harness_model",
-                issues=[f"source slide {intent.slide_id} not found"]))
+            out.append(
+                ResolvedSlide(
+                    slide_id=intent.slide_id,
+                    source_slide_id=intent.slide_id,
+                    intent_id=intent.candidate_id,
+                    generation_origin=str(raw.get("generation_origin", "harness_model"))
+                    if isinstance(raw, dict)
+                    else "harness_model",
+                    issues=[f"source slide {intent.slide_id} not found"],
+                )
+            )
             continue
-        resolved = resolve_diagnostic_layout(intent, source, profile, rules,
-                                              capabilities)
+        resolved = resolve_diagnostic_layout(intent, source, profile, rules, capabilities)
         geometry: dict[str, dict[str, int]] = {}
         content_box = resolved.content_box or {}
         zone_issues: list[str] = []
@@ -134,8 +139,10 @@ def resolve_slides_from_intents(
         # source-id entries below are explicit lineage aliases consumed by
         # emit_slide, not a second writable geometry namespace.
         from .geometry import upgrade_legacy_bindings as _upgrade_bindings
+
         canon_geometry, source_to_node, binding_issues = _upgrade_bindings(
-            resolved.zones, content_box)
+            resolved.zones, content_box
+        )
         geometry.update(canon_geometry)
         zone_issues.extend(binding_issues)
         for ref, nodes in source_to_node.items():
@@ -147,18 +154,28 @@ def resolve_slides_from_intents(
         if unbound:
             zone_issues.append(
                 f"UNBOUND_GEOMETRY_NEEDS_REPAIR: {len(unbound)} source objects "
-                f"have no zone binding {unbound[:3]}; no synthetic row created")
-        out.append(ResolvedSlide(
-            slide_id=intent.slide_id, source_slide_id=source.id,
-            intent_id=intent.candidate_id,
-            generation_origin=origin or "harness_model",
-            zones=resolved.zones,
-            role_assignments={str(z.get("zone_id", "")): str(z.get("role", ""))
-                              for z in resolved.zones},
-            geometry_emu=geometry, diagnostic_geometry=True,
-            issues=[*list(resolved.issues), *zone_issues,
+                f"have no zone binding {unbound[:3]}; no synthetic row created"
+            )
+        out.append(
+            ResolvedSlide(
+                slide_id=intent.slide_id,
+                source_slide_id=source.id,
+                intent_id=intent.candidate_id,
+                generation_origin=origin or "harness_model",
+                zones=resolved.zones,
+                role_assignments={
+                    str(z.get("zone_id", "")): str(z.get("role", "")) for z in resolved.zones
+                },
+                geometry_emu=geometry,
+                diagnostic_geometry=True,
+                issues=[
+                    *list(resolved.issues),
+                    *zone_issues,
                     "DIAGNOSTIC_GEOMETRY: legacy intent path; "
-                    "blocked from user acceptance until measured resolve"]))
+                    "blocked from user acceptance until measured resolve",
+                ],
+            )
+        )
     return out
 
 
@@ -186,6 +203,7 @@ def _zone_to_emu(zone: dict[str, Any], content_box: dict[str, float]) -> dict[st
 # §3 preflight
 # ---------------------------------------------------------------------------
 
+
 def preflight_native_export(
     source: Any,
     ledger: Any,
@@ -211,15 +229,20 @@ def preflight_native_export(
     manifest = getattr(source, "package_manifest", None)
     if manifest is not None:
         for part in manifest.parts:
-            contracts.append(PartPreservationContract(
-                source=SourcePartKey(package_sha256=source.source_sha256,
-                                     part_name=part.part_name),
-                target_part=None, mode="binary_exact",
-                reason="preflight: source closure carried unless replaced",
-                evidence_refs=[part.part_name],
-            ))
-    data_support = "native_full" if all(
-        s != "unsupported" for s in emission_plan.values()) else "partial"
+            contracts.append(
+                PartPreservationContract(
+                    source=SourcePartKey(
+                        package_sha256=source.source_sha256, part_name=part.part_name
+                    ),
+                    target_part=None,
+                    mode="binary_exact",
+                    reason="preflight: source closure carried unless replaced",
+                    evidence_refs=[part.part_name],
+                )
+            )
+    data_support = (
+        "native_full" if all(s != "unsupported" for s in emission_plan.values()) else "partial"
+    )
     ok = not [i for i in issues if "unsupported" in i and not options.diagnostic]
     if not options.diagnostic and issues:
         ok = False
@@ -263,6 +286,7 @@ def _strategy_for(obj: Any, options: ExportOptions) -> str:
 # Emission driver (§10 emit_slide)
 # ---------------------------------------------------------------------------
 
+
 def _is_omittable_decor(obj: Any) -> bool:
     """Text-less autoshape decor may be omitted (never required text).
 
@@ -276,8 +300,7 @@ def _is_omittable_decor(obj: Any) -> bool:
     # Stage 7 §1.4/§6.2: arrow-bearing shapes are candidate relations,
     # never automatic decor — even when text-less.
     line = getattr(payload, "source_line", None) if payload else None
-    for end in (getattr(line, "begin_arrow", None),
-                getattr(line, "end_arrow", None)):
+    for end in (getattr(line, "begin_arrow", None), getattr(line, "end_arrow", None)):
         if end not in (None, "", "none"):
             return False
     paras = getattr(payload, "paragraphs", None)
@@ -296,34 +319,176 @@ def _is_omittable_decor(obj: Any) -> bool:
 
 
 def _authored_block_paragraphs(
-        refs: list[str],
-        objects: dict[str, Any]) -> list[dict[str, Any]]:
-    """Ordered paragraphs of an authored block, with span provenance.
+    refs: list[str],
+    objects: dict[str, Any],
+    ref_roles: dict[str, str] | None = None,
+    paragraph_groups: list[list[str]] | None = None,
+    inline_separator: str = " ",
+) -> list[dict[str, Any]]:
+    from .text_flow import build_rich_paragraphs
 
-    Source order is preserved exactly and each paragraph records the source
-    object and paragraph index it came from, so the saved frame can be
-    compared span by span instead of as one merged blob (§3.3).
+    return build_rich_paragraphs(objects, refs, ref_roles, paragraph_groups, inline_separator)
+
+
+def _zone_field(zone: Any, key: str) -> Any:
+    if isinstance(zone, dict):
+        return zone.get(key)
+    return getattr(zone, key, None)
+
+
+@dataclass(frozen=True)
+class PainterEntry:
+    """One drawable target of a slide (authored block or source object)."""
+
+    target_id: str
+    kind: str  # "block" | "object"
+    z_index: int
+    is_surface_underlay: bool = False
+
+
+def build_painter_order(
+    entries: list[PainterEntry],
+    underlay_of: dict[str, str],
+) -> tuple[list[str], list[str]]:
+    """ONE render order for every drawable target (§4.4).
+
+    Rich text blocks and ordinary objects used to be appended in two
+    independent passes, so an opaque panel from the second pass could paint
+    over merged text that had already been written. Both kinds now enter one
+    DAG.
+
+    Edges:
+      * ``underlay_of[content] = underlay`` — a declared containment
+        (typed ``surface_child`` permission or, on the legacy intent path,
+        a source-box containment constraint): the surface is drawn first;
+      * a surface underlay is drawn before every target that is not itself
+        a surface underlay, preserving the Stage 4 promotion that a
+        relocated panel must not cover the content it holds.
+
+    The sort is a stable topological sort: ties keep ``(z_index, id)``
+    order, so an unchanged slide serialises identically. A cycle is a typed
+    conflict, never a silent partial order.
     """
-    from .layout import _object_paragraphs  # noqa: PLC0415
+    issues: list[str] = []
+    by_id = {e.target_id: e for e in entries}
+    edges: dict[str, set[str]] = {e.target_id: set() for e in entries}
+    indeg: dict[str, int] = {e.target_id: 0 for e in entries}
 
-    out: list[dict[str, Any]] = []
-    for ref in refs:
-        obj = objects.get(str(ref))
-        if obj is None:
+    def _edge(parent: str, child: str) -> None:
+        if parent not in by_id or child not in by_id or parent == child:
+            return
+        if child in edges[parent]:
+            return
+        edges[parent].add(child)
+        indeg[child] += 1
+
+    for content, underlay in underlay_of.items():
+        _edge(underlay, content)
+    underlays = sorted(e.target_id for e in entries if e.is_surface_underlay)
+    if underlays:
+        underlay_set = set(underlays)
+        for underlay in underlays:
+            for entry in entries:
+                if entry.target_id in underlay_set:
+                    continue
+                _edge(underlay, entry.target_id)
+
+    def _key(node_id: str) -> tuple[int, str]:
+        e = by_id[node_id]
+        return (e.z_index, e.target_id)
+
+    ready = sorted([n for n in by_id if indeg[n] == 0], key=_key)
+    order: list[str] = []
+    while ready:
+        node = ready.pop(0)
+        order.append(node)
+        for nxt in sorted(edges[node], key=_key):
+            indeg[nxt] -= 1
+            if indeg[nxt] == 0:
+                ready.append(nxt)
+        ready.sort(key=_key)
+    if len(order) != len(by_id):
+        stuck = sorted(set(by_id) - set(order))
+        issues.append(f"PAINTER_ORDER_CONFLICT: cyclic render order between {stuck[:6]}")
+        # Emit the acyclic remainder so nothing is silently dropped; the
+        # conflict is recorded as a blocking finding by the caller.
+        order.extend(sorted(stuck, key=_key))
+    return order, issues
+
+
+def _derive_underlay_map(
+    resolved: ResolvedSlide,
+    entries: list[PainterEntry],
+    objects: dict[str, Any],
+) -> dict[str, str]:
+    """Declared containment relations between drawables on this slide.
+
+    Preferred source is the resolved slide's typed ``underlay_of`` map (the
+    authored scene path). The legacy intent path falls back to the
+    ``container_containment`` constraints the composition derived from
+    source boxes — still a declared relation, never a slide-wide clique.
+    """
+    typed = {str(k): str(v) for k, v in dict(getattr(resolved, "underlay_of", {}) or {}).items()}
+    out = {k: v for k, v in typed.items() if v}
+    for zone in list(resolved.zones or []):
+        surface = str(_zone_field(zone, "surface_token") or "")
+        if not surface:
             continue
-        for idx, para in enumerate(_object_paragraphs(obj)):
-            entry = dict(para)
-            entry["source_ref"] = str(ref)
-            entry["source_paragraph_index"] = idx
-            entry["id"] = f"{ref}:{idx}"
-            runs = []
-            for ridx, run in enumerate(entry.get("runs", []) or []):
-                run = dict(run)
-                run["id"] = f"{ref}:{idx}:{ridx}"
-                runs.append(run)
-            entry["runs"] = runs
-            out.append(entry)
+        refs = [str(r) for r in (_zone_field(zone, "content_refs") or [])]
+        shapes = [r for r in refs if getattr(objects.get(r), "kind", "") == "shape"]
+        others = [r for r in refs if r not in shapes]
+        for shape in shapes:
+            for other in others:
+                out.setdefault(other, shape)
     return out
+
+
+def _visual_normalization_plans(
+    objects: list[Any],
+    semantic_slide: Any,
+    transform_ledger: Any,
+    source_snapshot: str,
+    rules: Any,
+    zone_surface: dict[str, dict[str, str]],
+) -> dict[str, Any]:
+    """One decided normalization action per visual unit of this slide."""
+    from .semantics import can_omit_source_object  # noqa: PLC0415
+    from .visual_norm import (  # noqa: PLC0415
+        classify_visual_units,
+        plan_visual_normalization,
+    )
+
+    units = classify_visual_units(
+        objects,
+        semantic_slide,
+        transform_ledger,
+        source_snapshot,
+        can_omit=can_omit_source_object
+        if semantic_slide is not None and transform_ledger is not None
+        else None,
+    )
+    plans: dict[str, Any] = {}
+    for unit in units:
+        ref = unit.source_refs[0] if unit.source_refs else ""
+        surface = zone_surface.get(ref, {}) or {}
+        plans[unit.unit_id] = plan_visual_normalization(
+            unit,
+            semantic_slide,
+            rules,
+            {
+                "surface": str(surface.get("surface_token", "") or ""),
+                "foreground": str(surface.get("foreground_token", "") or ""),
+            },
+            stroke_token=str(surface.get("stroke_token", "") or ""),
+            fill_token=str(surface.get("surface_token", "") or ""),
+        )
+    for unit in units:
+        for ref in unit.source_refs:
+            # Every drawable resolves by object id at emission, required
+            # or not: keying only optional units starved every required
+            # diagram of its normalization plan (VISUAL_PLAN_MISSING).
+            plans.setdefault(f"object:{ref}", plans[unit.unit_id])
+    return plans
 
 
 def emit_slide(
@@ -352,18 +517,15 @@ def emit_slide(
             refs = list(zone.get("content_refs", []) or [])
             surface = {
                 "surface_token": str(zone.get("surface_token", "") or ""),
-                "foreground_token": str(
-                    zone.get("foreground_token", "") or ""),
+                "foreground_token": str(zone.get("foreground_token", "") or ""),
                 "stroke_token": str(zone.get("stroke_token", "") or ""),
             }
         else:
             role = str(getattr(zone, "role", "") or "")
             refs = list(getattr(zone, "content_refs", []) or [])
             surface = {
-                "surface_token": str(
-                    getattr(zone, "surface_token", "") or ""),
-                "foreground_token": str(
-                    getattr(zone, "foreground_token", "") or ""),
+                "surface_token": str(getattr(zone, "surface_token", "") or ""),
+                "foreground_token": str(getattr(zone, "foreground_token", "") or ""),
                 "stroke_token": str(getattr(zone, "stroke_token", "") or ""),
             }
         for ref in refs:
@@ -377,16 +539,24 @@ def emit_slide(
     # spans must not also be emitted by the per-source-object loop.
     authored_blocks: dict[str, dict[str, Any]] = {}
     for zone in list(resolved.zones or []):
-        refs = (list(zone.get("content_refs", []) or [])
-                if isinstance(zone, dict)
-                else list(getattr(zone, "content_refs", []) or []))
-        zone_id = (str(zone.get("zone_id", "") or "") if isinstance(zone, dict)
-                   else str(getattr(zone, "zone_id", "") or ""))
-        role = (str(zone.get("role", "") or "") if isinstance(zone, dict)
-                else str(getattr(zone, "role", "") or ""))
+        refs = (
+            list(zone.get("content_refs", []) or [])
+            if isinstance(zone, dict)
+            else list(getattr(zone, "content_refs", []) or [])
+        )
+        zone_id = (
+            str(zone.get("zone_id", "") or "")
+            if isinstance(zone, dict)
+            else str(getattr(zone, "zone_id", "") or "")
+        )
+        role = (
+            str(zone.get("role", "") or "")
+            if isinstance(zone, dict)
+            else str(getattr(zone, "role", "") or "")
+        )
         if not zone_id.startswith("zone:") or len(refs) < 2:
             continue
-        block_id = zone_id[len("zone:"):]
+        block_id = zone_id[len("zone:") :]
         box = resolved.geometry_emu.get(block_id)
         if box is None:
             continue
@@ -394,6 +564,12 @@ def emit_slide(
             "box_emu": box,
             "role": role,
             "refs": list(refs),
+            "paragraph_groups": list(_zone_field(zone, "paragraph_groups") or []),
+            "inline_separator": str(
+                _zone_field(zone, "inline_separator")
+                if _zone_field(zone, "inline_separator") is not None
+                else " "
+            ),
             "surface": {
                 "surface_token": str(zone.get("surface_token", "") or "")
                 if isinstance(zone, dict)
@@ -405,28 +581,108 @@ def emit_slide(
                 if isinstance(zone, dict)
                 else str(getattr(zone, "stroke_token", "") or ""),
             },
+            "ref_roles": {str(k): str(v) for k, v in dict(zone.get("ref_roles", {}) or {}).items()}
+            if isinstance(zone, dict)
+            else {str(k): str(v) for k, v in dict(getattr(zone, "ref_roles", {}) or {}).items()},
         }
     merged_refs: set[str] = set()
-    for block_id, block in authored_blocks.items():
+    for block in authored_blocks.values():
         merged_refs.update(str(r) for r in block["refs"])
-        paragraphs = _authored_block_paragraphs(
-            block["refs"], {o.id: o for o in source_slide.objects})
-        if not paragraphs:
-            continue
-        _native.emit_rich_text_block(
-            paragraphs, block["box_emu"], output_slide, context,
-            role=block["role"], rules=rules, node_id=block_id,
-            surface_tokens=block["surface"],
-            slide_position=output_position)
 
+    from .layout import _object_paragraphs as _no_text_paras  # noqa: PLC0415
+
+    by_object = {o.id: o for o in source_slide.objects}
     ordered = sorted(source_slide.objects, key=lambda o: (o.z_order, o.id))
+    # §4.4: ONE painter order over every drawable target. Authored rich
+    # text blocks and ordinary objects used to be appended in two separate
+    # passes, so an opaque panel drawn in the second pass painted over the
+    # merged text written in the first one.
+    entries: list[PainterEntry] = []
+    for obj in ordered:
+        if obj.id in merged_refs:
+            continue
+        entries.append(
+            PainterEntry(
+                target_id=obj.id,
+                kind="object",
+                z_index=int(obj.z_order),
+                is_surface_underlay=bool(zone_surface.get(obj.id, {}).get("surface_token"))
+                and not _no_text_paras(obj),
+            )
+        )
+    for block_id, block in authored_blocks.items():
+        zs = [int(by_object[r].z_order) for r in block["refs"] if r in by_object]
+        entries.append(PainterEntry(target_id=block_id, kind="block", z_index=min(zs) if zs else 0))
+    source_underlays = _derive_underlay_map(resolved, entries, by_object)
+    owners = {ref: block_id for block_id, block in authored_blocks.items() for ref in block["refs"]}
+    underlay_of = {
+        owners.get(child, child): owners.get(parent, parent)
+        for child, parent in source_underlays.items()
+        if owners.get(child, child) != owners.get(parent, parent)
+    }
+    painter_order, painter_issues = build_painter_order(entries, underlay_of)
+    context.issues.extend(painter_issues)
+    block_paragraphs = {
+        block_id: _authored_block_paragraphs(
+            block["refs"],
+            by_object,
+            block.get("ref_roles"),
+            block.get("paragraph_groups"),
+            block.get("inline_separator", " "),
+        )
+        for block_id, block in authored_blocks.items()
+    }
+
+    # §6.2 visual normalization: decide BEFORE emission what each drawing
+    # element becomes. The renderer executes the plan and may no longer
+    # conclude "source stroke is not in the palette -> clear the line",
+    # which erased the ГГД schematic and the process chain on the NTC deck.
+    visual_plans = _visual_normalization_plans(
+        list(source_slide.objects),
+        semantic_slide,
+        transform_ledger,
+        source_snapshot,
+        rules,
+        zone_surface,
+    )
+
+    # Slide backdrop from the authored scene (§6.4). A dark brand surface
+    # is content: brand assets and light text need it. The token is
+    # palette-validated upstream; only its normative RGB is applied.
+    bg_token = str(getattr(resolved, "slide_background_token", "") or "")
+    if bg_token:
+        bg_rgb = _native._resolve_token_rgb(bg_token, rules)
+        if bg_rgb:
+            _native.set_slide_background(output_slide, bg_rgb, resolved.slide_id, context)
+        else:
+            context.issues.append(
+                f"SURFACE_TOKEN_UNKNOWN: {resolved.slide_id} background "
+                f"token {bg_token!r} not in the loaded palette; slide "
+                "default kept"
+            )
+
     connectors: list[dict[str, Any]] = []
     id_map: dict[str, int] = {}
     by_shapeid = {f"shapeid:{o.source_ref.shape_id}": o.id for o in ordered}
-    for obj in ordered:
-        if obj.id in merged_refs:
-            # Already emitted as part of an authored block; emitting again
-            # would duplicate the span (and read as a content conflict).
+    for target_id in painter_order:
+        if target_id in block_paragraphs:
+            block = authored_blocks[target_id]
+            paragraphs = block_paragraphs[target_id]
+            if paragraphs:
+                _native.emit_rich_text_block(
+                    paragraphs,
+                    block["box_emu"],
+                    output_slide,
+                    context,
+                    role=block["role"],
+                    rules=rules,
+                    node_id=target_id,
+                    surface_tokens=block["surface"],
+                    slide_position=output_position,
+                )
+            continue
+        obj = by_object.get(target_id)
+        if obj is None:
             continue
         box = resolved.geometry_emu.get(obj.id)
         if box is None:
@@ -435,15 +691,16 @@ def emit_slide(
             # ledger is available, can_omit_source_object decides; the
             # legacy text-less check is only a pre-filter, never an
             # authorization. Arrows and text-bearing objects are refused.
-            if semantic_slide is not None and \
-                    transform_ledger is not None:
+            if semantic_slide is not None and transform_ledger is not None:
                 from .semantics import can_omit_source_object  # noqa: PLC0415
+
                 decision = can_omit_source_object(
-                    obj, semantic_slide, transform_ledger, source_snapshot)
+                    obj, semantic_slide, transform_ledger, source_snapshot
+                )
                 if decision.allowed:
                     context.issues.append(
-                        f"DECOR_OMITTED: {obj.id} omitted "
-                        f"({decision.authorization_ref})")
+                        f"DECOR_OMITTED: {obj.id} omitted ({decision.authorization_ref})"
+                    )
                     try:
                         omitted = getattr(context, "omitted_decor", None)
                         if isinstance(omitted, list):
@@ -452,16 +709,15 @@ def emit_slide(
                         pass
                     continue
                 if decision.needs_review:
-                    raise ValueError(
-                        f"OMIT_NEEDS_REVIEW: {obj.id}: {decision.reason}")
-                raise ValueError(
-                    f"OMIT_REFUSED: {obj.id}: {decision.reason}")
+                    raise ValueError(f"OMIT_NEEDS_REVIEW: {obj.id}: {decision.reason}")
+                raise ValueError(f"OMIT_REFUSED: {obj.id}: {decision.reason}")
             # Legacy path (no ledger): text-less autoshape omit only;
             # required (text/arrow-bearing) unbound objects stay blocking.
             if _is_omittable_decor(obj):
                 context.issues.append(
                     f"DECOR_OMITTED: {obj.id} text-less decor without "
-                    "zone binding omitted (authorized_replace)")
+                    "zone binding omitted (authorized_replace)"
+                )
                 try:
                     omitted = getattr(context, "omitted_decor", None)
                     if isinstance(omitted, list):
@@ -473,94 +729,136 @@ def emit_slide(
             # Required objects without zone binding are errors, not fallbacks.
             context.issues.append(
                 f"GEOMETRY_BINDING_MISSING: {obj.id} has no zone binding; "
-                "required object cannot be emitted without geometry")
+                "required object cannot be emitted without geometry"
+            )
             raise ValueError(
                 f"GEOMETRY_BINDING_MISSING: {obj.id} has no zone binding; "
-                "required object cannot be emitted without geometry")
+                "required object cannot be emitted without geometry"
+            )
         kind = obj.kind
         obj_role = zone_roles.get(obj.id, getattr(obj.payload, "role", "unknown"))
         try:
             surface = zone_surface.get(obj.id, {})
             if kind == "text":
                 addr = _native.emit_text(
-                    obj.payload, {"box_emu": box, "role": obj_role,
-                                  **surface},
-                    output_slide, context, rules=rules, source_object_id=obj.id,
-                    slide_position=output_position)
+                    obj.payload,
+                    {"box_emu": box, "role": obj_role, **surface},
+                    output_slide,
+                    context,
+                    rules=rules,
+                    source_object_id=obj.id,
+                    slide_position=output_position,
+                )
             elif kind == "table":
                 payload = obj.payload
-                grid = (getattr(resolved, "table_layout_emu", {}) or {}).get(
-                    obj.id)
+                grid = (getattr(resolved, "table_layout_emu", {}) or {}).get(obj.id)
                 if grid and isinstance(grid, dict):
                     from copy import deepcopy as _deepcopy
 
                     payload = _deepcopy(payload)
                     try:
                         payload.column_widths_emu = [
-                            int(v) for v in grid.get(
-                                "column_widths_emu", [])]
-                        payload.row_heights_emu = [
-                            int(v) for v in grid.get("row_heights_emu", [])]
+                            int(v) for v in grid.get("column_widths_emu", [])
+                        ]
+                        payload.row_heights_emu = [int(v) for v in grid.get("row_heights_emu", [])]
                     except (TypeError, ValueError):
                         payload = obj.payload
                 addr = _native.emit_table(
-                    payload, {"box_emu": box, "role": obj_role},
-                    output_slide, context,
-                    rules=rules, source_object_id=obj.id)
+                    payload,
+                    {"box_emu": box, "role": obj_role},
+                    output_slide,
+                    context,
+                    rules=rules,
+                    source_object_id=obj.id,
+                )
             elif kind == "chart":
                 payload = obj.payload
                 if getattr(payload, "representation", "native_part") == "verified_data":
                     addr = _native.emit_new_chart(
-                        payload.data, {"box_emu": box}, output_slide, context,
-                        source_object_id=obj.id)
+                        payload.data,
+                        {"box_emu": box},
+                        output_slide,
+                        context,
+                        source_object_id=obj.id,
+                    )
                 else:
                     addr = _native.emit_existing_chart(
-                        payload, {"box_emu": box}, output_slide, context,
+                        payload,
+                        {"box_emu": box},
+                        output_slide,
+                        context,
                         source_package_path=source_package_path or "",
-                        source_slide_part=getattr(source_slide, "slide_part",
-                                                  "") or "",
+                        source_slide_part=getattr(source_slide, "slide_part", "") or "",
                         source_object_id=obj.id,
-                        slide_position=output_position)
+                        slide_position=output_position,
+                    )
             elif kind == "shape":
                 addr = _native.emit_shape(
-                    obj.payload, {"box_emu": box, "role": obj_role,
-                                  **surface},
-                    output_slide, context,
-                    rules=rules, source_object_id=obj.id)
+                    obj.payload,
+                    {"box_emu": box, "role": obj_role, **surface},
+                    output_slide,
+                    context,
+                    rules=rules,
+                    source_object_id=obj.id,
+                    visual_plan=visual_plans.get(f"object:{obj.id}"),
+                )
             elif kind == "group":
                 addr = _native.emit_group(
-                    obj.payload, {"box_emu": box}, output_slide, context,
-                    rules=rules, source_object_id=obj.id)
+                    obj.payload,
+                    {"box_emu": box},
+                    output_slide,
+                    context,
+                    rules=rules,
+                    source_object_id=obj.id,
+                )
             elif kind == "image":
                 addr = _native.emit_image(
-                    obj.payload, {"box_emu": box}, output_slide, context,
+                    obj.payload,
+                    {"box_emu": box},
+                    output_slide,
+                    context,
                     source_package_path=source_package_path,
-                    source_object_id=obj.id)
+                    source_object_id=obj.id,
+                )
             elif kind == "connector":
                 payload = obj.payload
-                if (getattr(payload, "from_object_id", None) is None
-                        and getattr(payload, "to_object_id", None) is None):
+                if (
+                    getattr(payload, "from_object_id", None) is None
+                    and getattr(payload, "to_object_id", None) is None
+                ):
                     addr = _native.emit_free_connector(
-                        payload, {"box_emu": box,
-                                  **zone_surface.get(obj.id, {})},
-                        output_slide, context, rules=rules,
-                        source_object_id=obj.id)
+                        payload,
+                        {"box_emu": box, **zone_surface.get(obj.id, {})},
+                        output_slide,
+                        context,
+                        rules=rules,
+                        source_object_id=obj.id,
+                        visual_plan=visual_plans.get(f"object:{obj.id}"),
+                    )
                     id_map[obj.id] = addr.shape_id
                     bound.append(obj.id)
                     continue
-                connectors.append({"from": by_shapeid.get(
-                    str(payload.from_object_id), str(payload.from_object_id)),
-                    "to": by_shapeid.get(
-                    str(payload.to_object_id), str(payload.to_object_id)),
-                    "from_site": payload.from_site, "to_site": payload.to_site,
-                    "object_id": obj.id})
+                connectors.append(
+                    {
+                        "from": by_shapeid.get(
+                            str(payload.from_object_id), str(payload.from_object_id)
+                        ),
+                        "to": by_shapeid.get(str(payload.to_object_id), str(payload.to_object_id)),
+                        "from_site": payload.from_site,
+                        "to_site": payload.to_site,
+                        "object_id": obj.id,
+                    }
+                )
                 continue
             elif kind == "unknown":
                 addr = _native.emit_unknown(
-                    obj, {"box_emu": box}, output_slide, context,
-                    source_slide_part=getattr(source_slide, "slide_part",
-                                              "") or "",
-                    source_object_id=obj.id)
+                    obj,
+                    {"box_emu": box},
+                    output_slide,
+                    context,
+                    source_slide_part=getattr(source_slide, "slide_part", "") or "",
+                    source_object_id=obj.id,
+                )
                 id_map[obj.id] = addr.shape_id
                 bound.append(obj.id)
                 continue
@@ -570,37 +868,55 @@ def emit_slide(
         except Exception as exc:  # noqa: BLE001 - scoped, never silent
             msg = str(exc)
             if "REQUIRED_ASSET_UNRESOLVED" in msg or "retrievable asset" in msg:
-                context.issues.append(
-                    f"REQUIRED_ASSET_UNRESOLVED: emit failed {obj.id}: {exc}")
+                context.issues.append(f"REQUIRED_ASSET_UNRESOLVED: emit failed {obj.id}: {exc}")
             else:
                 context.issues.append(f"emit failed {obj.id}: {exc}")
             # Required failure is a typed reject: text/table/chart/image
             # emit errors block acceptance (recorded, never swallowed by
             # a bare continue). Only omittable decor may pass quietly,
             # and it never reaches here (omitted above, not emitted).
-            if getattr(obj, "kind", "") in ("text", "table", "chart",
-                                            "image") or not _is_omittable_decor(
-                                                obj):
+            if getattr(obj, "kind", "") in (
+                "text",
+                "table",
+                "chart",
+                "image",
+            ) or not _is_omittable_decor(obj):
                 context.issues.append(
                     f"REQUIRED_EMIT_FAILED: {obj.id} kind="
-                    f"{getattr(obj, 'kind', '')} blocks acceptance")
+                    f"{getattr(obj, 'kind', '')} blocks acceptance"
+                )
             continue
         id_map[obj.id] = addr.shape_id
         bound.append(obj.id)
     if connectors:
         _native.emit_connectors(
-            [{"from": c["from"], "to": c["to"], "object_id": c["object_id"],
-              "from_site": c["from_site"], "to_site": c["to_site"]}
-             for c in connectors],
-            output_slide, context, id_map)
-    _native.copy_notes(getattr(source_slide, "notes", []), output_slide, context,
-                       source_slide_id=getattr(source_slide, "id", ""))
+            [
+                {
+                    "from": c["from"],
+                    "to": c["to"],
+                    "object_id": c["object_id"],
+                    "from_site": c["from_site"],
+                    "to_site": c["to_site"],
+                }
+                for c in connectors
+            ],
+            output_slide,
+            context,
+            id_map,
+        )
+    _native.copy_notes(
+        getattr(source_slide, "notes", []),
+        output_slide,
+        context,
+        source_slide_id=getattr(source_slide, "id", ""),
+    )
     return bound
 
 
 # ---------------------------------------------------------------------------
 # §11 finalize / compare / verify
 # ---------------------------------------------------------------------------
+
 
 def finalize_and_save_candidate(
     context: _native.NativeDeckContext,
@@ -625,16 +941,18 @@ def finalize_and_save_candidate(
             extra_parts.update(tctx.target_payloads)
             extra_ctypes.update(tctx.target_content_types)
             for mapping in tctx.relationship_map:
-                extra_rels.setdefault(mapping.target_owner, []).append({
-                    "id": mapping.target_rid, "type": mapping.relationship_type,
-                    "target": mapping.target_part_or_uri,
-                    "mode": mapping.target_mode,
-                })
+                extra_rels.setdefault(mapping.target_owner, []).append(
+                    {
+                        "id": mapping.target_rid,
+                        "type": mapping.relationship_type,
+                        "target": mapping.target_part_or_uri,
+                        "mode": mapping.target_mode,
+                    }
+                )
         # Chart-frame and internal-link rels collected during wiring.
         for owner, rel in context.deferred_owner_rels:
             extra_rels.setdefault(owner, []).append(rel)
-        report = adapter.assemble_final_package(
-            staged, extra_parts, extra_ctypes, extra_rels, path)
+        report = adapter.assemble_final_package(staged, extra_parts, extra_ctypes, extra_rels, path)
     graph_report = adapter.validate_package_graph(path)
     success = bool(graph_report.get("ok"))
     issues = [str(i) for i in context.issues]
@@ -643,6 +961,7 @@ def finalize_and_save_candidate(
     # Independent reimport on final bytes (never overwrites source IR).
     try:
         from .importer import import_deck
+
         store = AssetStore(path.parent / "candidate_assets")
         _deck_after, _check = import_deck(path, store)
         reimport_ok = True
@@ -650,8 +969,9 @@ def finalize_and_save_candidate(
         reimport_ok = False
         issues.append(f"candidate reimport failed: {exc}")
         success = False
-    return CandidateArtifact(path=str(path), sha256=report["sha256"],
-                             success=success and reimport_ok, issues=issues)
+    return CandidateArtifact(
+        path=str(path), sha256=report["sha256"], success=success and reimport_ok, issues=issues
+    )
 
 
 def compare_export_preservation(
@@ -686,8 +1006,9 @@ def compare_export_preservation(
             continue
         for item in list(getattr(b, "evidence", []) or []):
             if isinstance(item, str) and item.startswith("obj:"):
-                shape_to_obj[(getattr(addr, "slide_part", ""),
-                              int(getattr(addr, "shape_id", 0)))] = item[4:]
+                shape_to_obj[
+                    (getattr(addr, "slide_part", ""), int(getattr(addr, "shape_id", 0)))
+                ] = item[4:]
                 break
 
     def _after_shape(part: str, shape_id: int) -> Any | None:
@@ -721,8 +1042,20 @@ def compare_export_preservation(
     dangling: list[str] = []
     unexpected: list[str] = []
     seen: dict[str, int] = {}
-    allowed_transforms = {"identity", "wrap", "title_uppercase", "style_only",
-                          "relocate", "authorized_rewrite"}
+    # `native_rebuild` is the native writer's own emission strategy: the
+    # content is rewritten verbatim into a new p:sp/txBody and then
+    # compared against the source atom below like every other transform.
+    # Listing it as unexpected would reject the writer that is supposed to
+    # produce the output, not protect the content.
+    allowed_transforms = {
+        "identity",
+        "wrap",
+        "title_uppercase",
+        "style_only",
+        "relocate",
+        "authorized_rewrite",
+        "native_rebuild",
+    }
 
     for b in bindings:
         atom_id = getattr(b, "source_atom_id", "")
@@ -746,15 +1079,32 @@ def compare_export_preservation(
         expected = _apply_expected(atom.canonical_value, transform)
         actual: str | None = None
         if "/hyperlink" in sub:
-            match = re.match(r"para\[(\d+)\]/hyperlink", sub)
-            actual = _hyperlink_uri(obj, int(match.group(1))) if match else None
+            match = re.fullmatch(r"para\[(\d+)\]/hyperlink_at\[(\d+)\]", sub)
+            if match:
+                payload = getattr(obj, "payload", None)
+                paras = getattr(payload, "paragraphs", None)
+                if paras is None:
+                    paras = getattr(getattr(payload, "text", None), "paragraphs", []) or []
+                pidx, offset = int(match.group(1)), int(match.group(2))
+                position = 0
+                for run in paras[pidx].runs if pidx < len(paras) else []:
+                    if position == offset and run.hyperlink is not None:
+                        actual = run.hyperlink.uri or run.hyperlink.target_slide_ref or ""
+                        break
+                    position += len(run.text)
+            else:
+                match = re.match(r"para\[(\d+)\]/hyperlink", sub)
+                actual = _hyperlink_uri(obj, int(match.group(1))) if match else None
         elif sub.startswith("para["):
             match = re.match(r"para\[(\d+)\]", sub)
             actual = _para_text(obj, int(match.group(1))) if match else None
+            span = re.fullmatch(r"para\[\d+\]/chars\[(\d+):(\d+)\]", sub)
+            if span and actual is not None:
+                start, end = int(span.group(1)), int(span.group(2))
+                actual = actual[start:end] if 0 <= start <= end <= len(actual) else None
         elif sub.startswith("cell["):
             match = re.match(r"cell\[(\d+),(\d+)\]", sub)
-            actual = _cell_text(obj, int(match.group(1)),
-                                int(match.group(2))) if match else None
+            actual = _cell_text(obj, int(match.group(1)), int(match.group(2))) if match else None
         elif "/point[" in sub:
             match = re.match(r"series\[(\d+)\]:([^/]*)/point\[(\d+)\]", sub)
             actual = _point_text(obj, match) if match else None
@@ -766,16 +1116,17 @@ def compare_export_preservation(
                 # in the run's asset_overrides artifact with old/new
                 # hashes) is an authorized transform, not a content
                 # change. Anything else stays a hard change.
-                auth = (policy.get("authorized_asset_replacements", {})
-                        or {}).get(atom_id)
-                if (isinstance(auth, dict)
-                        and auth.get("old_sha256") == expected
-                        and auth.get("new_sha256") == actual):
+                auth = (policy.get("authorized_asset_replacements", {}) or {}).get(atom_id)
+                if (
+                    isinstance(auth, dict)
+                    and auth.get("old_sha256") == expected
+                    and auth.get("new_sha256") == actual
+                ):
                     actual = expected
         elif sub.startswith("edge["):
             # Edges compare at object identity (shape ids are unstable
             # across packages); the expected pair lives in the subaddress.
-            expected = sub[len("edge["):-1]
+            expected = sub[len("edge[") : -1]
             actual = _edge_state(obj, part, shape_to_obj, sub, actual_ir)
         elif sub.startswith("notes-para"):
             actual = _notes_text(actual_ir, part, atom_id)
@@ -793,9 +1144,9 @@ def compare_export_preservation(
             # so roundRect->rect is an accepted restyle, not a content
             # change. Any other geometry drift still fails.
             if actual is not None and (
-                    (expected in ("line",) and actual in (
-                        "line", "straightConnector", "connector"))
-                    or (expected == "roundRect" and actual == "rect")):
+                (expected in ("line",) and actual in ("line", "straightConnector", "connector"))
+                or (expected == "roundRect" and actual == "rect")
+            ):
                 actual = expected
         elif sub.startswith("group-child"):
             match = re.search(r"/para\[(\d+)\]$", sub)
@@ -803,11 +1154,9 @@ def compare_export_preservation(
         if actual is None:
             dangling.append(f"{atom_id}:{sub}")
         elif actual != expected:
-            changed.append(f"{atom_id}:expected={expected[:60]!r} "
-                           f"actual={actual[:60]!r}")
+            changed.append(f"{atom_id}:expected={expected[:60]!r} actual={actual[:60]!r}")
 
-    authorized_omits = set(
-        policy.get("authorized_omits", []) or [])
+    authorized_omits = set(policy.get("authorized_omits", []) or [])
     omitted_authorized: list[str] = []
     for atom_id in atoms:
         if seen.get(atom_id, 0) == 0:
@@ -817,12 +1166,16 @@ def compare_export_preservation(
                 missing.append(atom_id)
         elif seen.get(atom_id, 0) > 1:
             duplicated.append(atom_id)
-    ok = not missing and not duplicated and not changed and not dangling \
-        and not unexpected
-    return ContentDiff(missing=sorted(missing), duplicated=sorted(duplicated),
-                       changed=sorted(changed), dangling=sorted(dangling),
-                       unexpected_rewrites=sorted(unexpected),
-                       omitted_authorized=sorted(omitted_authorized), ok=ok)
+    ok = not missing and not duplicated and not changed and not dangling and not unexpected
+    return ContentDiff(
+        missing=sorted(missing),
+        duplicated=sorted(duplicated),
+        changed=sorted(changed),
+        dangling=sorted(dangling),
+        unexpected_rewrites=sorted(unexpected),
+        omitted_authorized=sorted(omitted_authorized),
+        ok=ok,
+    )
 
 
 def _hyperlink_uri(obj: Any, para_index: int) -> str | None:
@@ -865,8 +1218,11 @@ def _point_text(obj: Any, match: Any) -> str | None:
 
 
 def _display_of(point: Any) -> str | None:
-    for candidate in (getattr(point, "value", None), getattr(point, "y", None),
-                      getattr(point, "x", None)):
+    for candidate in (
+        getattr(point, "value", None),
+        getattr(point, "y", None),
+        getattr(point, "x", None),
+    ):
         if candidate is not None and getattr(candidate, "display_text", ""):
             return str(candidate.display_text)
     return ""
@@ -878,9 +1234,9 @@ def _image_sha(obj: Any) -> str | None:
     return str(getattr(asset, "sha256", "")) if asset is not None else None
 
 
-def _edge_state(obj: Any, part: str,
-                shape_to_obj: dict[tuple[str, int], str],
-                sub: str, after_ir: Any = None) -> str | None:
+def _edge_state(
+    obj: Any, part: str, shape_to_obj: dict[tuple[str, int], str], sub: str, after_ir: Any = None
+) -> str | None:
     """Verify a connector links the same source objects (by obj identity).
 
     The reimported payload already resolves endpoints to after-object ids;
@@ -906,8 +1262,7 @@ def _edge_state(obj: Any, part: str,
             for other in slide.objects:
                 ref = getattr(other, "source_ref", None)
                 if ref is not None:
-                    after_id_to_shape[getattr(other, "id", "")] = int(
-                        getattr(ref, "shape_id", -1))
+                    after_id_to_shape[getattr(other, "id", "")] = int(getattr(ref, "shape_id", -1))
     actual: list[str] = []
     for endpoint in (payload.from_object_id, payload.to_object_id):
         sid = after_id_to_shape.get(str(endpoint))
@@ -950,15 +1305,15 @@ def _notes_text(actual_ir: Any, part: str, atom_id: str) -> str | None:
             continue
         for para in list(getattr(slide, "notes", []) or []):
             if atom_id.endswith(f"/{getattr(para, 'id', '')}"):
-                return "".join(getattr(r, "text", "")
-                               for r in getattr(para, "runs", []))
+                return "".join(getattr(r, "text", "") for r in getattr(para, "runs", []))
     # Fallback: joined notes text contains the canonical value.
     for slide in getattr(actual_ir, "slides", []) or []:
         if getattr(slide, "slide_part", "") != part:
             continue
-        joined = "\n".join("".join(getattr(r, "text", "")
-                                   for r in getattr(p, "runs", []))
-                           for p in list(getattr(slide, "notes", []) or []))
+        joined = "\n".join(
+            "".join(getattr(r, "text", "") for r in getattr(p, "runs", []))
+            for p in list(getattr(slide, "notes", []) or [])
+        )
         return joined
     return None
 
@@ -968,8 +1323,9 @@ def _group_child_text(obj: Any, sub: str, match: Any) -> str | None:
     import re as _re
 
     payload = getattr(obj, "payload", None)
-    head = _re.match(r"group-child\[([0-9/]+)\]/para\[(\d+)\]", sub) \
-        or _re.match(r"group-child\[([0-9/]+)\]", sub)
+    head = _re.match(r"group-child\[([0-9/]+)\]/para\[(\d+)\]", sub) or _re.match(
+        r"group-child\[([0-9/]+)\]", sub
+    )
     path = [int(i) for i in head.group(1).split("/")] if head else []
     node: Any = payload
     for step in path:
@@ -1041,8 +1397,12 @@ def compare_export_parts(
         template_substitution_violations=sorted(violations),
         dangling_targets=sorted(dangling),
         unverified_exclusions=sorted(unverified),
-        ok=not unmapped and not missing_bin and not unexpected
-        and not violations and not dangling and not unverified,
+        ok=not unmapped
+        and not missing_bin
+        and not unexpected
+        and not violations
+        and not dangling
+        and not unverified,
     )
     return diff
 
@@ -1057,8 +1417,7 @@ def verify_native_objects(
     for slide in getattr(actual_ir, "slides", []) or []:
         for obj in getattr(slide, "objects", []) or []:
             kinds[getattr(obj, "kind", "unknown")] += 1
-    opaque_bound = sum(1 for b in bindings
-                       if (getattr(b, "target_subaddress", "") == "opaque"))
+    opaque_bound = sum(1 for b in bindings if (getattr(b, "target_subaddress", "") == "opaque"))
     # Opaque-preserved is a declared strategy with a byte contract, not an
     # unverified gap: native structure holds when every unknown object has
     # an opaque binding. Style compliance is still NOT claimed for them.
@@ -1077,6 +1436,7 @@ def verify_native_objects(
 # ---------------------------------------------------------------------------
 # run_native_build (§12)
 # ---------------------------------------------------------------------------
+
 
 def _emit_resolved_slides(
     run_dir: Path,
@@ -1117,29 +1477,45 @@ def _emit_resolved_slides(
     # Active template: prefer the derived base template artifact.
     template_path = _find_template(run_dir, project_root)
     if template_path is None:
-        return _fail(run_dir, provider, "no verified template available", artifacts,
-                     origin=plan_origin)
-    slide_plan = [{"source_slide_id": r.source_slide_id, "slide_id": r.slide_id,
-                   "hidden": _slide_hidden(deck, r.source_slide_id)}
-                  for r in resolved]
+        return _fail(
+            run_dir, provider, "no verified template available", artifacts, origin=plan_origin
+        )
+    slide_plan = [
+        {
+            "source_slide_id": r.source_slide_id,
+            "slide_id": r.slide_id,
+            "hidden": _slide_hidden(deck, r.source_slide_id),
+        }
+        for r in resolved
+    ]
     list_profile = None
     list_profile_path = run_dir / "list_profile.json"
     if list_profile_path.is_file():
         try:
             from .models import ListStyleProfile
+
             list_profile = ListStyleProfile.model_validate(
-                json.loads(list_profile_path.read_text(encoding="utf-8")))
+                json.loads(list_profile_path.read_text(encoding="utf-8"))
+            )
         except Exception:  # noqa: BLE001 - optional profile
             list_profile = None
-    ctx = _native.create_output_deck(template_path, profile or {}, slide_plan,
-                                      rules=rules, work_dir=run_dir / "export_work",
-                                      list_profile=list_profile)
+    ctx = _native.create_output_deck(
+        template_path,
+        profile or {},
+        slide_plan,
+        rules=rules,
+        work_dir=run_dir / "export_work",
+        list_profile=list_profile,
+    )
     # Transplant source package for chart/media closure.
     if source_path and Path(source_path).is_file():
         parts, ctypes, outgoing, phash = load_source_package(source_path)
         ctx.transplant_context = TransplantContext(
-            source_package_hash=phash, source_parts=parts,
-            source_content_types=ctypes, source_outgoing=outgoing)
+            source_package_hash=phash,
+            source_parts=parts,
+            source_content_types=ctypes,
+            source_outgoing=outgoing,
+        )
         protected = _protected_parts(run_dir)
         ctx.transplant_context.protected_target_parts = frozenset(protected)
     ctx.asset_store = AssetStore(run_dir / "assets")
@@ -1169,71 +1545,92 @@ def _emit_resolved_slides(
     # ledger + semantic projection authorize decor omits and arrow
     # re-expression per source snapshot; without them the legacy
     # text-less check applies (arrows stay blocking).
-    semantic_deck, ledger_model, snapshot = _load_semantic_gate_inputs(
-        run_dir)
+    semantic_deck, ledger_model, snapshot = _load_semantic_gate_inputs(run_dir)
     slides_semantic = {}
     if semantic_deck is not None:
-        slides_semantic = {s.source_slide_id: s
-                           for s in semantic_deck.slides}
+        slides_semantic = {s.source_slide_id: s for s in semantic_deck.slides}
     for index, res in enumerate(resolved):
         output_slide = ctx.presentation.slides[index]
         source_slide = slides_by_id.get(res.source_slide_id)
         if source_slide is None:
             issues.append(f"source slide missing: {res.source_slide_id}")
             continue
-        emit_slide(res, source_slide, ctx, output_slide, index, rules=rules,
-                   source_package_path=source_path,
-                   semantic_slide=slides_semantic.get(res.source_slide_id),
-                   transform_ledger=ledger_model,
-                   source_snapshot=snapshot)
+        emit_slide(
+            res,
+            source_slide,
+            ctx,
+            output_slide,
+            index,
+            rules=rules,
+            source_package_path=source_path,
+            semantic_slide=slides_semantic.get(res.source_slide_id),
+            transform_ledger=ledger_model,
+            source_snapshot=snapshot,
+        )
     link_report = _native.remap_hyperlinks(ctx)
-    atomic_write_json(run_dir / "emission_report.json", {
-        "records": [r.model_dump(mode="json") for r in ctx.emission_records],
-        "issues": list(ctx.issues), "links": link_report})
+    atomic_write_json(
+        run_dir / "emission_report.json",
+        {
+            "records": [r.model_dump(mode="json") for r in ctx.emission_records],
+            "issues": list(ctx.issues),
+            "links": link_report,
+        },
+    )
     artifacts["emission_report"] = str(run_dir / "emission_report.json")
-    atomic_write_json(run_dir / "output_object_map.json", {
-        "bindings": [b.model_dump(mode="json") for b in ctx.output_map]})
+    atomic_write_json(
+        run_dir / "output_object_map.json",
+        {"bindings": [b.model_dump(mode="json") for b in ctx.output_map]},
+    )
     artifacts["output_object_map"] = str(run_dir / "output_object_map.json")
 
     candidate_path = run_dir / candidate_name
     if candidate_path.exists() and not options.overwrite:
-        return _fail(run_dir, provider,
-                     f"OUTPUT_EXISTS: {candidate_name} exists",
-                     artifacts, origin=plan_origin)
-    candidate = finalize_and_save_candidate(
-        ctx, candidate_path, {"scope": options.workflow})
-    atomic_write_json(run_dir / "package_graph_report.json",
-                      adapter.validate_package_graph(candidate_path))
+        return _fail(
+            run_dir,
+            provider,
+            f"OUTPUT_EXISTS: {candidate_name} exists",
+            artifacts,
+            origin=plan_origin,
+        )
+    candidate = finalize_and_save_candidate(ctx, candidate_path, {"scope": options.workflow})
+    atomic_write_json(
+        run_dir / "package_graph_report.json", adapter.validate_package_graph(candidate_path)
+    )
     artifacts["candidate"] = str(candidate_path)
 
     # Independent checks on final bytes.
     from .importer import import_deck
+
     store = AssetStore(run_dir / "candidate_assets")
     after_deck, _ = import_deck(candidate_path, store)
-    atomic_write_json(run_dir / "candidate_after_ir.json",
-                      after_deck.model_dump(mode="json"))
+    atomic_write_json(run_dir / "candidate_after_ir.json", after_deck.model_dump(mode="json"))
     from .provenance import build_ledger
+
     after_ledger = build_ledger(after_deck, decoration=[])
-    atomic_write_json(run_dir / "candidate_after_ledger.json",
-                      after_ledger.model_dump(mode="json"))
+    atomic_write_json(run_dir / "candidate_after_ledger.json", after_ledger.model_dump(mode="json"))
     from .importer import build_import_support_report, resolve_internal_links
     from .package import read_package as _read_package
+
     after_graph = _read_package(candidate_path, store)
     after_links = resolve_internal_links(after_deck, after_graph)
-    atomic_write_json(run_dir / "candidate_after_links.json",
-                      after_links.model_dump(mode="json"))
+    atomic_write_json(run_dir / "candidate_after_links.json", after_links.model_dump(mode="json"))
     after_support = build_import_support_report(
-        after_deck, after_ledger, after_links, after_deck.import_issues)
-    atomic_write_json(run_dir / "candidate_after_support.json",
-                      after_support.model_dump(mode="json"))
+        after_deck, after_ledger, after_links, after_deck.import_issues
+    )
+    atomic_write_json(
+        run_dir / "candidate_after_support.json", after_support.model_dump(mode="json")
+    )
     artifacts["candidate_after"] = str(run_dir / "candidate_after_ir.json")
     content_policy: dict[str, Any] = {}
     if asset_overrides:
-        by_atom = {f"{obj_id}#asset": {
-            "old_sha256": entry.get("old_sha256", ""),
-            "new_sha256": entry.get("new_sha256", ""),
-            "reason": entry.get("reason", ""),
-        } for obj_id, entry in asset_overrides.items()}
+        by_atom = {
+            f"{obj_id}#asset": {
+                "old_sha256": entry.get("old_sha256", ""),
+                "new_sha256": entry.get("new_sha256", ""),
+                "reason": entry.get("reason", ""),
+            }
+            for obj_id, entry in asset_overrides.items()
+        }
         content_policy["authorized_asset_replacements"] = by_atom
     # Stage6 §3.2: authorized omits from the classification ledger
     # (confirmed decoration with evidence + authorization; never silent).
@@ -1246,45 +1643,54 @@ def _emit_resolved_slides(
     class_doc = _read_json(run_dir / "classification_and_transformation_ledger.json")
     if isinstance(class_doc, dict):
         for dec in class_doc.get("decisions", []) or []:
-            if not isinstance(dec, dict) or not dec.get(
-                    "source_object_id") or not dec.get("authorization_ref"):
+            if (
+                not isinstance(dec, dict)
+                or not dec.get("source_object_id")
+                or not dec.get("authorization_ref")
+            ):
                 continue
             if dec.get("action") == "omit":
-                authorized_omits.add(
-                    f"{dec['source_object_id']}#shape")
-            elif dec.get("action") in ("recompose", "replace") and dec.get(
-                    "target_relation_ids"):
+                authorized_omits.add(f"{dec['source_object_id']}#shape")
+            elif dec.get("action") in ("recompose", "replace") and dec.get("target_relation_ids"):
                 reexpressed.add(f"{dec['source_object_id']}#shape")
     if authorized_omits or reexpressed:
-        content_policy["authorized_omits"] = sorted(authorized_omits
-                                                    | reexpressed)
-        issues.append(f"AUTHORIZED_OMITS: {len(authorized_omits)} geometry "
-                      "atoms (confirmed text-less decor, ledgered)")
+        content_policy["authorized_omits"] = sorted(authorized_omits | reexpressed)
+        issues.append(
+            f"AUTHORIZED_OMITS: {len(authorized_omits)} geometry "
+            "atoms (confirmed text-less decor, ledgered)"
+        )
     if reexpressed:
-        issues.append(f"REEXPRESSED_RELATIONS: {len(reexpressed)} arrow "
-                      "atoms re-expressed as native relations (ledgered; "
-                      "preservation proven by semantic relations gate)")
-    content_diff = compare_export_preservation(ledger, after_deck,
-                                               ctx.output_map,
-                                               content_policy)
+        issues.append(
+            f"REEXPRESSED_RELATIONS: {len(reexpressed)} arrow "
+            "atoms re-expressed as native relations (ledgered; "
+            "preservation proven by semantic relations gate)"
+        )
+    content_diff = compare_export_preservation(ledger, after_deck, ctx.output_map, content_policy)
     atomic_write_json(run_dir / "content_diff.json", content_diff)
     if asset_overrides:
-        applied = [i for i in ctx.issues
-                   if i.startswith("ASSET_OVERRIDE_APPLIED")]
-        atomic_write_json(run_dir / "authorized_replacements_report.json",
-                          {"overrides": asset_overrides,
-                           "applied": applied,
-                           "complete": sorted(asset_overrides)
-                           == sorted(a.split(" ")[1] for a in applied)})
+        applied = [i for i in ctx.issues if i.startswith("ASSET_OVERRIDE_APPLIED")]
+        atomic_write_json(
+            run_dir / "authorized_replacements_report.json",
+            {
+                "overrides": asset_overrides,
+                "applied": applied,
+                "complete": sorted(asset_overrides) == sorted(a.split(" ")[1] for a in applied),
+            },
+        )
         artifacts["authorized_replacements_report"] = str(
-            run_dir / "authorized_replacements_report.json")
+            run_dir / "authorized_replacements_report.json"
+        )
     part_diff = compare_export_parts(
-        None, candidate_path, list(ctx.part_contracts), [],
+        None,
+        candidate_path,
+        list(ctx.part_contracts),
+        [],
         source_parts=dict(ctx.transplant_context.source_parts)
-        if ctx.transplant_context is not None else None)
+        if ctx.transplant_context is not None
+        else None,
+    )
     atomic_write_json(run_dir / "part_preservation_diff.json", part_diff)
-    native_report = verify_native_objects(candidate_path, after_deck,
-                                           ctx.output_map)
+    native_report = verify_native_objects(candidate_path, after_deck, ctx.output_map)
     native_report.data_preservation_verified = bool(content_diff.ok)
     atomic_write_json(run_dir / "native_editability_report.json", native_report)
     # Recovery §5: saved-bytes authoring gate (C01/C03/C21/C22 +
@@ -1292,42 +1698,45 @@ def _emit_resolved_slides(
     # expected IR. A serialization that reintroduces source styles,
     # theme effectRef, synthetic bold, or colorless runs blocks quality.
     from .rules import check_saved_authoring_rules
+
     saved_authoring = check_saved_authoring_rules(candidate_path, rules)
-    atomic_write_json(run_dir / "saved_authoring_rule_report.json",
-                      saved_authoring)
-    artifacts["saved_authoring_rule_report"] = str(
-        run_dir / "saved_authoring_rule_report.json")
+    atomic_write_json(run_dir / "saved_authoring_rule_report.json", saved_authoring)
+    artifacts["saved_authoring_rule_report"] = str(run_dir / "saved_authoring_rule_report.json")
     # Prompt §1/§12: actual saved-geometry gate on reopened bytes.
     # diagnostic_geometry=true never passes user acceptance, even when
     # all style checks pass; fully-outside required content is a hard
     # fail independent of ledger equality.
     from .geometry import check_saved_geometry
+
     saved_geometry = check_saved_geometry(candidate_path, rules)
-    atomic_write_json(run_dir / "saved_geometry_report.json",
-                      saved_geometry)
-    artifacts["saved_geometry_report"] = str(
-        run_dir / "saved_geometry_report.json")
-    diagnostic_blocked = any(bool(getattr(r, "diagnostic_geometry", False))
-                             for r in resolved)
+    atomic_write_json(run_dir / "saved_geometry_report.json", saved_geometry)
+    artifacts["saved_geometry_report"] = str(run_dir / "saved_geometry_report.json")
+    diagnostic_blocked = any(bool(getattr(r, "diagnostic_geometry", False)) for r in resolved)
     if diagnostic_blocked:
-        saved_geometry = {**saved_geometry, "result": "fail",
-                          "issues": [*saved_geometry.get("issues", []),
-                                     "DIAGNOSTIC_GEOMETRY_REJECTED: resolved slide "
-                                     "carries diagnostic_geometry=true; user pipeline "
-                                     "requires measured resolve"]}
-        atomic_write_json(run_dir / "saved_geometry_report.json",
-                          saved_geometry)
+        saved_geometry = {
+            **saved_geometry,
+            "result": "fail",
+            "issues": [
+                *saved_geometry.get("issues", []),
+                "DIAGNOSTIC_GEOMETRY_REJECTED: resolved slide "
+                "carries diagnostic_geometry=true; user pipeline "
+                "requires measured resolve",
+            ],
+        }
+        atomic_write_json(run_dir / "saved_geometry_report.json", saved_geometry)
     # Transplant + chart + template + style artifacts (§14.2).
-    _write_transplant_artifacts(run_dir, ctx, source_path, template_path,
-                                artifacts, candidate_name)
+    _write_transplant_artifacts(run_dir, ctx, source_path, template_path, artifacts, candidate_name)
     _write_trace_artifacts(run_dir, resolved, ctx, intents, artifacts)
-    artifacts.update({
-        "content_diff": str(run_dir / "content_diff.json"),
-        "part_diff": str(run_dir / "part_preservation_diff.json"),
-        "native_editability": str(run_dir / "native_editability_report.json"),
-    })
+    artifacts.update(
+        {
+            "content_diff": str(run_dir / "content_diff.json"),
+            "part_diff": str(run_dir / "part_preservation_diff.json"),
+            "native_editability": str(run_dir / "native_editability_report.json"),
+        }
+    )
 
     from .cli import _production_assets_status
+
     assets_ready, _ = _production_assets_status(project_root, config)
     preservation_ok = bool(content_diff.ok and candidate.success)
     saved_authoring_ok = not bool(saved_authoring.get("hard_fail", False))
@@ -1338,44 +1747,59 @@ def _emit_resolved_slides(
             + "; ".join(
                 f"{rid}({info.get('violation_count', 0)}): "
                 f"{(info.get('violations') or [''])[0][:100]}"
-                for rid, info in
-                (saved_authoring.get("rules") or {}).items()
-                if info.get("result") == "fail")[:4])
+                for rid, info in (saved_authoring.get("rules") or {}).items()
+                if info.get("result") == "fail"
+            )[:4]
+        )
     # Recovery §8: technical serialization success is not user quality.
     # Saved-bytes C01/C03/C21/C22/foreground failures block completed.
     # Saved-geometry/off-canvas/diagnostic failures block it as well.
     if not saved_geometry_ok:
         issues.append(
             "SAVED_GEOMETRY_VIOLATION: "
-            + "; ".join(saved_geometry.get("issues", [])[:2]
-                        or saved_geometry.get("out_of_canvas", [])[:2]
-                        or ["geometry gate failed"]))
-    status = "completed" if (
-        preservation_ok and saved_authoring_ok and saved_geometry_ok) else "needs_review"
+            + "; ".join(
+                saved_geometry.get("issues", [])[:2]
+                or saved_geometry.get("out_of_canvas", [])[:2]
+                or ["geometry gate failed"]
+            )
+        )
+    status = (
+        "completed"
+        if (preservation_ok and saved_authoring_ok and saved_geometry_ok)
+        else "needs_review"
+    )
     if verification_scope != "full_source":
         artifacts["verification_scope"] = verification_scope
         artifacts["pilot_selection"] = str(run_dir / "pilot_selection.json")
     result = NativeBuildResult(
         operation_status=status,  # type: ignore[arg-type]
-        export_scope=options.workflow, llm_provider=provider,
+        export_scope=options.workflow,
+        llm_provider=provider,
         plan_generation_origin=plan_origin or f"harness ({origin_note})",
-        candidate_path=str(candidate_path), candidate_sha256=candidate.sha256,
+        candidate_path=str(candidate_path),
+        candidate_sha256=candidate.sha256,
         source_preservation_verified=bool(content_diff.ok),
-        package_graph_verified=bool(adapter.validate_package_graph(
-            candidate_path).get("ok")),
+        package_graph_verified=bool(adapter.validate_package_graph(candidate_path).get("ok")),
         native_structure_verified=bool(native_report.native_structure_verified),
         unresolved_scopes=list(unresolved_scopes),
         production_assets_ready=bool(assets_ready),
-        render_verified=False, powerpoint_ui_edit_verified=False,
+        render_verified=False,
+        powerpoint_ui_edit_verified=False,
         strict_output_ready=False,
         saved_geometry_verified=bool(saved_geometry_ok),
         layout_resolved=bool(extra_result_fields.get("layout_resolved", False)),
-        issues=[*issues, *candidate.issues,
-                *([] if assets_ready else ["FONTS/GPN_FONTS_MISSING"])],
-        artifacts=artifacts, **{k: v for k, v in extra_result_fields.items()
-                                if k not in ("saved_geometry_verified", "layout_resolved")})
+        issues=[*issues, *candidate.issues, *([] if assets_ready else ["FONTS/GPN_FONTS_MISSING"])],
+        artifacts=artifacts,
+        **{
+            k: v
+            for k, v in extra_result_fields.items()
+            if k not in ("saved_geometry_verified", "layout_resolved")
+        },
+    )
     atomic_write_json(run_dir / readiness_name, result)
     return result
+
+
 def run_native_build(
     run_dir: str | Path,
     plans_dir: str | Path,
@@ -1391,11 +1815,15 @@ def run_native_build(
     provider, origin_note = resolve_llm_provider(config)
     if provider == PROVIDER_LOCAL:
         result = NativeBuildResult(
-            operation_status="invalid_input", llm_provider=provider,
+            operation_status="invalid_input",
+            llm_provider=provider,
             plan_generation_origin="deferred_local_server",
-            issues=["MODEL_LOCAL_DEFERRED: local_server adapter not implemented; "
-                    "no harness fallback performed"],
-            artifacts={})
+            issues=[
+                "MODEL_LOCAL_DEFERRED: local_server adapter not implemented; "
+                "no harness fallback performed"
+            ],
+            artifacts={},
+        )
         atomic_write_json(run_dir / "stage4_readiness.json", result)
         return result
 
@@ -1415,12 +1843,16 @@ def run_native_build(
     # Immutable inputs: source IR/ledger + compiled rules + template profile.
     try:
         from .models import CompiledOntology, SourceDeckIR, SourceLedger, TemplateProfile
+
         deck = SourceDeckIR.model_validate_json(
-            (run_dir / "source_ir.json").read_text(encoding="utf-8"))
+            (run_dir / "source_ir.json").read_text(encoding="utf-8")
+        )
         ledger = SourceLedger.model_validate_json(
-            (run_dir / "source_ledger.json").read_text(encoding="utf-8"))
+            (run_dir / "source_ledger.json").read_text(encoding="utf-8")
+        )
         rules = CompiledOntology.model_validate_json(
-            (run_dir / "compiled_rules.json").read_text(encoding="utf-8"))
+            (run_dir / "compiled_rules.json").read_text(encoding="utf-8")
+        )
     except OSError as exc:
         return _fail(run_dir, provider, f"missing run inputs: {exc}", artifacts)
     profile = None
@@ -1429,8 +1861,8 @@ def run_native_build(
         if candidate.is_file():
             try:
                 from .models import TemplateProfile
-                profile = TemplateProfile.model_validate_json(
-                    candidate.read_text(encoding="utf-8"))
+
+                profile = TemplateProfile.model_validate_json(candidate.read_text(encoding="utf-8"))
             except Exception:  # noqa: BLE001
                 profile = None
             break
@@ -1440,44 +1872,63 @@ def run_native_build(
     if not intents:
         return _fail(run_dir, provider, "no accepted plans in plans_dir", artifacts)
     if scope_selection is not None:
-        intents = [it for it in intents
-                   if (it.get("intent", it).get("slide_id") if isinstance(
-                       it.get("intent", it), dict) else "") in scope_selection]
+        intents = [
+            it
+            for it in intents
+            if (
+                it.get("intent", it).get("slide_id")
+                if isinstance(it.get("intent", it), dict)
+                else ""
+            )
+            in scope_selection
+        ]
 
     manifest = _read_json(run_dir / "run_manifest.json")
     source_path = (manifest or {}).get("source_path", "")
     capabilities = {"implemented_operators": ["move", "style"]}
-    resolved = resolve_slides_from_intents(intents, deck, rules, profile or {},
-                                          capabilities)
+    resolved = resolve_slides_from_intents(intents, deck, rules, profile or {}, capabilities)
     verification_scope = "full_source"
     if scope_selection is not None:
-        ledger, verification_scope = scope_ledger_for_pilot(
-            deck, ledger, scope_selection, run_dir)
+        ledger, verification_scope = scope_ledger_for_pilot(deck, ledger, scope_selection, run_dir)
     stale = [r for r in resolved if r.issues and "not found" in " ".join(r.issues)]
     if stale:
-        return _fail(run_dir, provider,
-                     f"stale plan: {[r.slide_id for r in stale]}", artifacts)
+        return _fail(run_dir, provider, f"stale plan: {[r.slide_id for r in stale]}", artifacts)
 
-    preflight = preflight_native_export(deck, ledger, resolved, rules,
-                                        profile or {}, options)
+    preflight = preflight_native_export(deck, ledger, resolved, rules, profile or {}, options)
     atomic_write_json(run_dir / "export_preflight.json", preflight)
     artifacts["export_preflight"] = str(run_dir / "export_preflight.json")
     if not preflight.ok:
-        return _fail(run_dir, provider,
-                     f"preflight refused: {preflight.unresolved[:3]}", artifacts,
-                     origin=plan_origin)
+        return _fail(
+            run_dir,
+            provider,
+            f"preflight refused: {preflight.unresolved[:3]}",
+            artifacts,
+            origin=plan_origin,
+        )
 
     return _emit_resolved_slides(
-        run_dir, config, options, deck=deck, ledger=ledger, rules=rules,
-        profile=profile, intents=intents, resolved=resolved,
-        verification_scope=verification_scope, provider=provider,
-        origin_note=origin_note, plan_origin=plan_origin,
-        source_path=source_path, artifacts=artifacts, issues=issues)
+        run_dir,
+        config,
+        options,
+        deck=deck,
+        ledger=ledger,
+        rules=rules,
+        profile=profile,
+        intents=intents,
+        resolved=resolved,
+        verification_scope=verification_scope,
+        provider=provider,
+        origin_note=origin_note,
+        plan_origin=plan_origin,
+        source_path=source_path,
+        artifacts=artifacts,
+        issues=issues,
+    )
 
 
-def scope_ledger_for_pilot(deck: Any, ledger: Any,
-                           scope_selection: list[str] | None,
-                           run_dir: Path) -> tuple[Any, str]:
+def scope_ledger_for_pilot(
+    deck: Any, ledger: Any, scope_selection: list[str] | None, run_dir: Path
+) -> tuple[Any, str]:
     """§13.3: restrict the required-atom ledger to the declared pilot scope.
 
     Returns ``(scoped_ledger, verification_scope)`` and writes
@@ -1488,67 +1939,83 @@ def scope_ledger_for_pilot(deck: Any, ledger: Any,
     """
     if scope_selection is None:
         return ledger, "full_source"
-    selected_parts = {s.slide_part or "" for s in deck.slides
-                      if s.id in set(scope_selection)}
+    selected_parts = {s.slide_part or "" for s in deck.slides if s.id in set(scope_selection)}
     scope_doc_ex = _read_json(run_dir / "pilot_selection.json") or {}
     excluded_ids: set[str] = set()
     exclusion_grounds: dict[str, str] = {}
     for entry in list(scope_doc_ex.get("excluded_objects", []) or []):
         if isinstance(entry, dict) and entry.get("id"):
             excluded_ids.add(str(entry["id"]))
-            exclusion_grounds[str(entry["id"])] = str(
-                entry.get("grounds", ""))
-    scoped_atoms = [a for a in ledger.atoms
-                    if (getattr(getattr(a, "source_ref", None),
-                                "slide_part", "") in selected_parts
-                        or getattr(getattr(a, "source_ref", None),
-                                   "kind", "") != "pptx")
-                    and str(getattr(a, "id", "")) not in excluded_ids
-                    and str(getattr(a, "id", "")).split("#")[0]
-                    not in excluded_ids]
-    excluded_atoms = [a for a in ledger.atoms
-                      if str(getattr(a, "id", "")) in excluded_ids
-                      or str(getattr(a, "id", "")).split("#")[0]
-                      in excluded_ids]
-    notes_atoms = sum(1 for a in scoped_atoms
-                      if getattr(a, "kind", "") == "notes")
+            exclusion_grounds[str(entry["id"])] = str(entry.get("grounds", ""))
+    scoped_atoms = [
+        a
+        for a in ledger.atoms
+        if (
+            getattr(getattr(a, "source_ref", None), "slide_part", "") in selected_parts
+            or getattr(getattr(a, "source_ref", None), "kind", "") != "pptx"
+        )
+        and str(getattr(a, "id", "")) not in excluded_ids
+        and str(getattr(a, "id", "")).split("#")[0] not in excluded_ids
+    ]
+    excluded_atoms = [
+        a
+        for a in ledger.atoms
+        if str(getattr(a, "id", "")) in excluded_ids
+        or str(getattr(a, "id", "")).split("#")[0] in excluded_ids
+    ]
+    notes_atoms = sum(1 for a in scoped_atoms if getattr(a, "kind", "") == "notes")
     slides_meta = []
     for s in deck.slides:
         if s.id not in set(scope_selection):
             continue
-        notes = sum(1 for a in ledger.atoms
-                    if getattr(getattr(a, "source_ref", None),
-                               "slide_part", "") == (s.slide_part or "")
-                    and getattr(a, "kind", "") == "notes")
-        slides_meta.append({
-            "id": s.id,
-            "objects": len(list(getattr(s, "objects", []) or [])),
-            "hidden": bool(getattr(s, "hidden", False)),
-            "notes": notes,
-        })
-    atomic_write_json(run_dir / "ledger_scope_manifest.json", {
-        "verification_scope": "pilot_selection",
-        "selected_atoms": len(scoped_atoms),
-        "total_atoms": len(ledger.atoms),
-        "selected_notes_atoms": notes_atoms,
-        "slides": slides_meta,
-        "excluded_from_pilot": [
-            {"id": a.id, "kind": getattr(a, "kind", ""),
-             "grounds": exclusion_grounds.get(
-                 str(getattr(a, "id", "")), exclusion_grounds.get(
-                     str(getattr(a, "id", "")).split("#")[0], ""))}
-            for a in excluded_atoms],
-    })
-    return ledger.model_copy(update={"atoms": scoped_atoms}), \
-        "pilot_selection"
+        notes = sum(
+            1
+            for a in ledger.atoms
+            if getattr(getattr(a, "source_ref", None), "slide_part", "") == (s.slide_part or "")
+            and getattr(a, "kind", "") == "notes"
+        )
+        slides_meta.append(
+            {
+                "id": s.id,
+                "objects": len(list(getattr(s, "objects", []) or [])),
+                "hidden": bool(getattr(s, "hidden", False)),
+                "notes": notes,
+            }
+        )
+    atomic_write_json(
+        run_dir / "ledger_scope_manifest.json",
+        {
+            "verification_scope": "pilot_selection",
+            "selected_atoms": len(scoped_atoms),
+            "total_atoms": len(ledger.atoms),
+            "selected_notes_atoms": notes_atoms,
+            "slides": slides_meta,
+            "excluded_from_pilot": [
+                {
+                    "id": a.id,
+                    "kind": getattr(a, "kind", ""),
+                    "grounds": exclusion_grounds.get(
+                        str(getattr(a, "id", "")),
+                        exclusion_grounds.get(str(getattr(a, "id", "")).split("#")[0], ""),
+                    ),
+                }
+                for a in excluded_atoms
+            ],
+        },
+    )
+    return ledger.model_copy(update={"atoms": scoped_atoms}), "pilot_selection"
 
 
-def _fail(run_dir: Path, provider: str, message: str,
-          artifacts: dict[str, str], origin: str = "") -> NativeBuildResult:
+def _fail(
+    run_dir: Path, provider: str, message: str, artifacts: dict[str, str], origin: str = ""
+) -> NativeBuildResult:
     result = NativeBuildResult(
         operation_status="needs_review" if "OUTPUT_EXISTS" in message else "failed",
-        llm_provider=provider, plan_generation_origin=origin,
-        issues=[message], artifacts=dict(artifacts))
+        llm_provider=provider,
+        plan_generation_origin=origin,
+        issues=[message],
+        artifacts=dict(artifacts),
+    )
     with contextlib.suppress(OSError):
         atomic_write_json(run_dir / "stage4_readiness.json", result)
     return result
@@ -1572,10 +2039,14 @@ def _parts_equal(first: bytes | None, second: bytes | None) -> bool:
     return bool(first_c14n == second_c14n)
 
 
-def _write_transplant_artifacts(run_dir: Path, ctx: Any,
-                                source_path: str, template_path: Path | None,
-                                artifacts: dict[str, str],
-                                candidate_name: str = "candidate.pptx") -> None:
+def _write_transplant_artifacts(
+    run_dir: Path,
+    ctx: Any,
+    source_path: str,
+    template_path: Path | None,
+    artifacts: dict[str, str],
+    candidate_name: str = "candidate.pptx",
+) -> None:
     """Persist part/relationship maps, contracts, chart and template diffs."""
     import hashlib as _hashlib
 
@@ -1595,14 +2066,15 @@ def _write_transplant_artifacts(run_dir: Path, ctx: Any,
     atomic_write_json(run_dir / "relationship_map.json", rels)
     atomic_write_json(run_dir / "part_preservation_contracts.json", contracts)
     atomic_write_json(run_dir / "part_closure.json", closures)
-    artifacts.update({
-        "part_map": str(run_dir / "part_map.json"),
-        "relationship_map": str(run_dir / "relationship_map.json"),
-        "part_contracts": str(run_dir / "part_preservation_contracts.json"),
-        "part_closure": str(run_dir / "part_closure.json"),
-    })
-    atomic_write_json(run_dir / "chart_semantic_diff.json",
-                      list(ctx.chart_semantic_diffs))
+    artifacts.update(
+        {
+            "part_map": str(run_dir / "part_map.json"),
+            "relationship_map": str(run_dir / "relationship_map.json"),
+            "part_contracts": str(run_dir / "part_preservation_contracts.json"),
+            "part_closure": str(run_dir / "part_closure.json"),
+        }
+    )
+    atomic_write_json(run_dir / "chart_semantic_diff.json", list(ctx.chart_semantic_diffs))
     workbook_hashes: dict[str, str] = {}
     if tctx is not None:
         for target, payload in tctx.target_payloads.items():
@@ -1616,7 +2088,6 @@ def _write_transplant_artifacts(run_dir: Path, ctx: Any,
     # so byte equality would false-positive on benign reserialization).
     integrity: dict[str, Any] = {"protected": [], "violations": []}
     if template_path is not None and template_path.is_file():
-
         before = adapter.read_zip_members(template_path)
         after = adapter.read_zip_members(run_dir / candidate_name)
         for name, blob in sorted(before.items()):
@@ -1626,57 +2097,56 @@ def _write_transplant_artifacts(run_dir: Path, ctx: Any,
                 continue
                 other = after.get(name)
                 same = _parts_equal(blob, other)
-                integrity["protected"].append(
-                    {"part": name, "preserved": bool(same)})
+                integrity["protected"].append({"part": name, "preserved": bool(same)})
                 if not same:
                     integrity["violations"].append(name)
     integrity["ok"] = not integrity["violations"]
     atomic_write_json(run_dir / "template_integrity_report.json", integrity)
-    artifacts["template_integrity"] = str(
-        run_dir / "template_integrity_report.json")
+    artifacts["template_integrity"] = str(run_dir / "template_integrity_report.json")
     if template_path is not None and template_path.is_file():
         import hashlib as _hashlib2
 
         manifest = {
             "template_path": str(template_path),
-            "template_sha256": _hashlib2.sha256(
-                template_path.read_bytes()).hexdigest(),
-            "canvas_emu": [int(ctx.presentation.slide_width),
-                           int(ctx.presentation.slide_height)],
+            "template_sha256": _hashlib2.sha256(template_path.read_bytes()).hexdigest(),
+            "canvas_emu": [int(ctx.presentation.slide_width), int(ctx.presentation.slide_height)],
             "layout_source": "verified TemplateProfile layout identities",
         }
         atomic_write_json(run_dir / "active_template_manifest.json", manifest)
-        artifacts["active_template_manifest"] = str(
-            run_dir / "active_template_manifest.json")
+        artifacts["active_template_manifest"] = str(run_dir / "active_template_manifest.json")
 
 
-def _write_trace_artifacts(run_dir: Path, resolved: list[ResolvedSlide],
-                           ctx: Any, intents: list[dict[str, Any]],
-                           artifacts: dict[str, str]) -> None:
+def _write_trace_artifacts(
+    run_dir: Path,
+    resolved: list[ResolvedSlide],
+    ctx: Any,
+    intents: list[dict[str, Any]],
+    artifacts: dict[str, str],
+) -> None:
     """Persist resolved slides, intent→output trace and plan manifest."""
     out_dir = run_dir / "resolved_slides"
     out_dir.mkdir(parents=True, exist_ok=True)
     for res in resolved:
         (out_dir / f"{res.slide_id.replace('/', '_')}.json").write_text(
-            res.model_dump_json(indent=2), encoding="utf-8")
+            res.model_dump_json(indent=2), encoding="utf-8"
+        )
     trace = []
     for res in resolved:
-        trace.append({
-            "intent_id": res.intent_id,
-            "slide_id": res.slide_id,
-            "generation_origin": res.generation_origin,
-            "zones": res.zones,
-            "role_assignments": res.role_assignments,
-            "diagnostic_geometry": res.diagnostic_geometry,
-            "emission_addresses": [
-                r.model_dump(mode="json") for r in ctx.emission_records
-            ],
-        })
+        trace.append(
+            {
+                "intent_id": res.intent_id,
+                "slide_id": res.slide_id,
+                "generation_origin": res.generation_origin,
+                "zones": res.zones,
+                "role_assignments": res.role_assignments,
+                "diagnostic_geometry": res.diagnostic_geometry,
+                "emission_addresses": [r.model_dump(mode="json") for r in ctx.emission_records],
+            }
+        )
     atomic_write_json(run_dir / "intent_export_trace.json", trace)
     artifacts["intent_export_trace"] = str(run_dir / "intent_export_trace.json")
     artifacts["resolved_slides"] = str(out_dir)
-    roles_used = sorted({r for res in resolved for r in res.role_assignments.values()
-                         if r})
+    roles_used = sorted({r for res in resolved for r in res.role_assignments.values() if r})
     coverage = {
         "roles_assigned": roles_used,
         "role_source": "loaded ontology snapshot roles (no literals)",
@@ -1721,8 +2191,7 @@ def _load_semantic_gate_inputs(
     ir_path = run_dir / "source_ir.json"
     if ir_path.is_file():
         try:
-            snapshot = _hashlib.sha256(
-                ir_path.read_bytes()).hexdigest()
+            snapshot = _hashlib.sha256(ir_path.read_bytes()).hexdigest()
         except OSError:
             snapshot = ""
     deck = None
@@ -1730,8 +2199,7 @@ def _load_semantic_gate_inputs(
         p = run_dir / name
         if p.is_file():
             try:
-                deck = SemanticDeck.model_validate_json(
-                    p.read_text(encoding="utf-8"))
+                deck = SemanticDeck.model_validate_json(p.read_text(encoding="utf-8"))
             except ValueError:
                 deck = None
             break
@@ -1746,32 +2214,34 @@ def _load_semantic_gate_inputs(
             if not oid:
                 continue
             ref = str(dec.get("authorization_ref", ""))
-            basis = "harness_review" if ref.startswith("harness:") \
+            basis = (
+                "harness_review"
+                if ref.startswith("harness:")
                 else ("rule" if ref.startswith("rule:") else "unknown")
+            )
             action = str(dec.get("action", "preserve"))
             if action not in ("preserve", "recompose", "replace", "omit"):
                 continue
-            decisions.append(TransformationDecision(
-                source_object_id=oid,
-                source_unit_ids=[str(x) for x in
-                                 dec.get("source_unit_ids", [])],
-                action=action,  # type: ignore[arg-type]
-                target_node_ids=[str(x) for x in
-                                 dec.get("target_node_ids", [])],
-                target_relation_ids=[str(x) for x in
-                                     dec.get("target_relation_ids", [])],
-                authorization=TransformationAuthorization(
-                    authorized_by=ref.split(":", 1)[0] if ":" in ref
-                    else ref, basis=basis,  # type: ignore[arg-type]
-                    ref=ref),
-                semantic_evidence=[str(x) for x in
-                                   dec.get("evidence_refs",
-                                           dec.get("semantic_evidence", []))],
-                reason=str(dec.get("reason", "")),
-                source_snapshot=str(dec.get("source_snapshot", snapshot)
-                                    or snapshot)))
-        ledger = TransformLedger(source_snapshot=snapshot,
-                                 decisions=decisions)
+            decisions.append(
+                TransformationDecision(
+                    source_object_id=oid,
+                    source_unit_ids=[str(x) for x in dec.get("source_unit_ids", [])],
+                    action=action,  # type: ignore[arg-type]
+                    target_node_ids=[str(x) for x in dec.get("target_node_ids", [])],
+                    target_relation_ids=[str(x) for x in dec.get("target_relation_ids", [])],
+                    authorization=TransformationAuthorization(
+                        authorized_by=ref.split(":", 1)[0] if ":" in ref else ref,
+                        basis=basis,  # type: ignore[arg-type]
+                        ref=ref,
+                    ),
+                    semantic_evidence=[
+                        str(x) for x in dec.get("evidence_refs", dec.get("semantic_evidence", []))
+                    ],
+                    reason=str(dec.get("reason", "")),
+                    source_snapshot=str(dec.get("source_snapshot", snapshot) or snapshot),
+                )
+            )
+        ledger = TransformLedger(source_snapshot=snapshot, decisions=decisions)
     return deck, ledger, snapshot
 
 
@@ -1795,8 +2265,7 @@ def _load_accepted_plans(plans_dir: Path) -> tuple[list[dict[str, Any]], str]:
             # "generation_origin": ...}. Bare intents are also accepted.
             origin = str(item.get("generation_origin", ""))
             body = item.get("intent", item)
-            if isinstance(body, dict) and ("zones" in body
-                                           or "content_refs" in body):
+            if isinstance(body, dict) and ("zones" in body or "content_refs" in body):
                 if origin:
                     body = dict(body)
                     body["generation_origin"] = origin
@@ -1813,8 +2282,7 @@ def _load_accepted_plans(plans_dir: Path) -> tuple[list[dict[str, Any]], str]:
 
 
 def _find_template(run_dir: Path, project_root: Path) -> Path | None:
-    for candidate in (run_dir / "profiles" / "base_template.pptx",
-                      run_dir / "base_template.pptx"):
+    for candidate in (run_dir / "profiles" / "base_template.pptx", run_dir / "base_template.pptx"):
         if candidate.is_file():
             return candidate
     return None
@@ -1834,15 +2302,14 @@ def _wire_deferred_slide_rels(staged: Path, context: Any) -> None:
 
     members = adapter.read_zip_members(staged)
     slide_parts = _saved_slide_order(staged)
-    rel_ns = ("http://schemas.openxmlformats.org/package/2006/relationships")
+    rel_ns = "http://schemas.openxmlformats.org/package/2006/relationships"
     r_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
     c_ns = "http://schemas.openxmlformats.org/drawingml/2006/chart"
     a_ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
 
     def _owner_rids(owner: str) -> set[str]:
         directory, _, base = owner.rpartition("/")
-        rels_name = f"{directory}/_rels/{base}.rels" if directory else \
-            f"_rels/{base}.rels"
+        rels_name = f"{directory}/_rels/{base}.rels" if directory else f"_rels/{base}.rels"
         data = members.get(rels_name)
         if not data:
             return set()
@@ -1850,13 +2317,11 @@ def _wire_deferred_slide_rels(staged: Path, context: Any) -> None:
             root = etree.fromstring(data)
         except etree.XMLSyntaxError:
             return set()
-        return {n.get("Id") or ""
-                for n in root.findall(f"{{{rel_ns}}}Relationship")}
+        return {n.get("Id") or "" for n in root.findall(f"{{{rel_ns}}}Relationship")}
 
     def _claim(owner: str, want: str) -> str:
         taken = _owner_rids(owner)
-        taken.update(r["id"] for o, r in context.deferred_owner_rels
-                     if o == owner)
+        taken.update(r["id"] for o, r in context.deferred_owner_rels if o == owner)
         if want not in taken:
             return want
         counter = 1
@@ -1864,8 +2329,7 @@ def _wire_deferred_slide_rels(staged: Path, context: Any) -> None:
             counter += 1
         return f"{want}-{counter}"
 
-    def _patch_slide(owner: str, old_rid: str, new_rid: str,
-                     ns: str, local: str) -> None:
+    def _patch_slide(owner: str, old_rid: str, new_rid: str, ns: str, local: str) -> None:
         if old_rid == new_rid or owner not in members:
             return
         try:
@@ -1879,13 +2343,12 @@ def _wire_deferred_slide_rels(staged: Path, context: Any) -> None:
             if node.get(f"{{{r_ns}}}embed") == old_rid:
                 node.set(f"{{{r_ns}}}embed", new_rid)
                 break
-        members[owner] = etree.tostring(root, xml_declaration=True,
-                                        encoding="UTF-8", standalone=True)
+        members[owner] = etree.tostring(
+            root, xml_declaration=True, encoding="UTF-8", standalone=True
+        )
 
-    chart_type = ("http://schemas.openxmlformats.org/officeDocument/"
-                  "2006/relationships/chart")
-    slide_type = ("http://schemas.openxmlformats.org/officeDocument/"
-                  "2006/relationships/slide")
+    chart_type = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart"
+    slide_type = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide"
 
     for item in context.pending_chart_frames:
         pos = int(item.get("slide_position", 0))
@@ -1894,13 +2357,11 @@ def _wire_deferred_slide_rels(staged: Path, context: Any) -> None:
             continue
         owner = slide_parts[pos]
         final_rid = _claim(owner, str(item.get("rid", "rId9")))
-        _patch_slide(owner, str(item.get("rid", "")), final_rid,
-                     c_ns, "chart")
-        rel_target = posixpath.relpath(item["target_chart"],
-                                      posixpath.dirname(owner) or ".")
-        context.deferred_owner_rels.append((owner, {
-            "id": final_rid, "type": chart_type, "target": rel_target,
-            "mode": "internal"}))
+        _patch_slide(owner, str(item.get("rid", "")), final_rid, c_ns, "chart")
+        rel_target = posixpath.relpath(item["target_chart"], posixpath.dirname(owner) or ".")
+        context.deferred_owner_rels.append(
+            (owner, {"id": final_rid, "type": chart_type, "target": rel_target, "mode": "internal"})
+        )
 
     for item in context.pending_hyperlinks:
         if item.get("kind") != "internal":
@@ -1922,16 +2383,13 @@ def _wire_deferred_slide_rels(staged: Path, context: Any) -> None:
             continue
         owner = slide_parts[pos]
         final_rid = _claim(owner, str(item.get("rid", "rId9")))
-        _patch_slide(owner, str(item.get("rid", "")), final_rid,
-                     a_ns, "hlinkClick")
-        rel_target = posixpath.relpath(item["target_part"],
-                                      posixpath.dirname(owner) or ".")
-        context.deferred_owner_rels.append((owner, {
-            "id": final_rid, "type": slide_type, "target": rel_target,
-            "mode": "internal"}))
+        _patch_slide(owner, str(item.get("rid", "")), final_rid, a_ns, "hlinkClick")
+        rel_target = posixpath.relpath(item["target_part"], posixpath.dirname(owner) or ".")
+        context.deferred_owner_rels.append(
+            (owner, {"id": final_rid, "type": slide_type, "target": rel_target, "mode": "internal"})
+        )
 
-    with zipfile.ZipFile(staged, "w",
-                         compression=zipfile.ZIP_DEFLATED) as zf:
+    with zipfile.ZipFile(staged, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for name in sorted(members):
             zf.writestr(name, members[name])
 
@@ -1965,8 +2423,7 @@ def _saved_slide_order(staged: Path) -> list[str]:
             rid = node.get(f"{{{rns}}}id") or ""
             target = by_id.get(rid, "")
             if target:
-                ordered.append(posixpath.normpath(
-                    posixpath.join("ppt", target)).lstrip("/"))
+                ordered.append(posixpath.normpath(posixpath.join("ppt", target)).lstrip("/"))
     return ordered
 
 

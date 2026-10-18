@@ -53,8 +53,7 @@ class NativeDeckContext:
     pending_connectors: list[dict[str, Any]] = field(default_factory=list)
     pending_hyperlinks: list[dict[str, Any]] = field(default_factory=list)
     pending_chart_frames: list[dict[str, Any]] = field(default_factory=list)
-    deferred_owner_rels: list[tuple[str, dict[str, str]]] = field(
-        default_factory=list)
+    deferred_owner_rels: list[tuple[str, dict[str, str]]] = field(default_factory=list)
     source_part_positions: dict[str, int] = field(default_factory=dict)
     chart_semantic_diffs: list[dict[str, Any]] = field(default_factory=list)
     emission_records: list[EmissionRecord] = field(default_factory=list)
@@ -72,6 +71,7 @@ class NativeDeckContext:
 # §4 create_output_deck
 # ---------------------------------------------------------------------------
 
+
 def create_output_deck(
     template_path: str | Path,
     profile: Any,
@@ -84,8 +84,7 @@ def create_output_deck(
     """Create a new deck on the active template with all slides pre-created."""
     work_path = Path(work_dir) if work_dir else Path(tempfile.gettempdir())
     work_path.mkdir(parents=True, exist_ok=True)
-    clean_template, derivation = adapter.clean_template_copy(
-        template_path, work_path)
+    clean_template, derivation = adapter.clean_template_copy(template_path, work_path)
     template_hash = _hash_file(template_path)
     prs = adapter.open_template(clean_template)
     # Verify canvas matches loaded rules when both are available.
@@ -93,7 +92,8 @@ def create_output_deck(
     if rules is not None and canvas:
         try:
             if int(prs.slide_width) != int(canvas) or int(prs.slide_height) != int(
-                    getattr(rules.canvas, "h", prs.slide_height)):
+                getattr(rules.canvas, "h", prs.slide_height)
+            ):
                 raise ValueError("template canvas differs from loaded rules snapshot")
         except (TypeError, ValueError) as exc:
             raise ValueError(f"template/rules canvas mismatch: {exc}") from exc
@@ -118,8 +118,8 @@ def create_output_deck(
         ctx.source_to_output_slide_map[source_id] = part
     ctx.issues.append(f"template_hash={template_hash[:16]}")
     ctx.issues.append(
-        f"clean_template={derivation['sha256'][:16]} "
-        f"dropped={len(derivation['dropped_parts'])}")
+        f"clean_template={derivation['sha256'][:16]} dropped={len(derivation['dropped_parts'])}"
+    )
     return ctx
 
 
@@ -134,6 +134,7 @@ def _hash_file(path: str | Path) -> str:
 # ---------------------------------------------------------------------------
 # §6 text
 # ---------------------------------------------------------------------------
+
 
 def _role_style(role: str, rules: Any) -> dict[str, Any]:
     roles = getattr(rules, "roles", {}) or {}
@@ -161,9 +162,7 @@ def _hex_to_rgb(color: Any) -> tuple[int, int, int] | None:
     return None
 
 
-def apply_display_transform(
-    text: str, role: str, rules: Any
-) -> tuple[str, str]:
+def apply_display_transform(text: str, role: str, rules: Any) -> tuple[str, str]:
     """Apply a confirmed role-level case transform; returns (display, kind)."""
     style = _role_style(role, rules)
     if style.get("uppercase") is True:
@@ -185,8 +184,10 @@ def emit_text(
     box = resolved.get("box_emu") or {}
     shape = adapter.add_textbox(
         slide,
-        int(box.get("x", 914400)), int(box.get("y", 914400)),
-        int(box.get("w", 3657600)), int(box.get("h", 914400)),
+        int(box.get("x", 914400)),
+        int(box.get("y", 914400)),
+        int(box.get("w", 3657600)),
+        int(box.get("h", 914400)),
     )
     adapter.set_no_autofit(shape)
     adapter.strip_shape_effect_inheritance(shape)
@@ -217,10 +218,10 @@ def emit_text(
             context.issues.append(
                 f"SURFACE_TOKEN_UNKNOWN: {source_object_id} foreground "
                 f"token {fg_token!r} not in the loaded palette; role color "
-                "kept")
+                "kept"
+            )
     paragraphs = getattr(payload, "paragraphs", []) or []
-    para_transform = ("title_uppercase"
-                      if style.get("uppercase") is True else "identity")
+    para_transform = "title_uppercase" if style.get("uppercase") is True else "identity"
     tf = shape.text_frame
     tf.word_wrap = True
     first = True
@@ -239,8 +240,7 @@ def emit_text(
             by_offset.setdefault(int(getattr(br, "offset", 0)), []).append(br)
         for br in by_offset.pop(0, []):
             _emit_break(p, br, para_id or source_object_id, context)
-        for ridx, run in enumerate(list(getattr(para, "runs", []) or []),
-                                  start=1):
+        for ridx, run in enumerate(list(getattr(para, "runs", []) or []), start=1):
             run_id = getattr(run, "id", "")
             if "/br" in run_id:
                 # Break carrier run materialized by the reader: the ordered
@@ -256,37 +256,65 @@ def emit_text(
             else:
                 r = p.add_run()
                 raw = getattr(run, "text", "")
-                display, _ = apply_display_transform(str(raw), role, rules) \
-                    if rules is not None else (str(raw), "identity")
+                display, _ = (
+                    apply_display_transform(str(raw), role, rules)
+                    if rules is not None
+                    else (str(raw), "identity")
+                )
                 r.text = display
                 _style_run(r, style, run)
                 link = getattr(run, "hyperlink", None)
                 if link is not None and getattr(link, "uri", None):
                     r.hyperlink.address = link.uri
-                    context.pending_hyperlinks.append({
-                        "kind": "external", "uri": link.uri,
-                        "run_id": getattr(run, "id", ""),
-                    })
-                    _bind_atom(context, slide, shape, source_object_id,
-                               f"{getattr(run, 'id', '')}#hyperlink",
-                               f"para[{pidx}]/hyperlink", "style_only")
+                    context.pending_hyperlinks.append(
+                        {
+                            "kind": "external",
+                            "uri": link.uri,
+                            "run_id": getattr(run, "id", ""),
+                        }
+                    )
+                    _bind_atom(
+                        context,
+                        slide,
+                        shape,
+                        source_object_id,
+                        f"{getattr(run, 'id', '')}#hyperlink",
+                        f"para[{pidx}]/hyperlink",
+                        "style_only",
+                    )
                 elif link is not None and getattr(link, "target_slide_ref", None):
                     _emit_internal_run_link(
-                        r, shape, pidx, ridx, slide, context, link,
+                        r,
+                        shape,
+                        pidx,
+                        ridx,
+                        slide,
+                        context,
+                        link,
                         slide_position=slide_position,
-                        run_id=getattr(run, "id", ""))
-                    _bind_atom(context, slide, shape, source_object_id,
-                               f"{getattr(run, 'id', '')}#hyperlink",
-                               f"para[{pidx}]/hyperlink", "style_only")
+                        run_id=getattr(run, "id", ""),
+                    )
+                    _bind_atom(
+                        context,
+                        slide,
+                        shape,
+                        source_object_id,
+                        f"{getattr(run, 'id', '')}#hyperlink",
+                        f"para[{pidx}]/hyperlink",
+                        "style_only",
+                    )
             for br in by_offset.pop(ridx, []):
                 _emit_break(p, br, para_id or source_object_id, context)
         if para_id:
-            _bind_atom(context, slide, shape, source_object_id, para_id,
-                       f"para[{pidx}]", para_transform)
+            _bind_atom(
+                context, slide, shape, source_object_id, para_id, f"para[{pidx}]", para_transform
+            )
     address = _address_of(slide, shape, "text")
-    context.emission_records.append(EmissionRecord(
-        source_object_id=source_object_id, strategy="native_rebuild",
-        address=address))
+    context.emission_records.append(
+        EmissionRecord(
+            source_object_id=source_object_id, strategy="native_rebuild", address=address
+        )
+    )
     return address
 
 
@@ -302,114 +330,194 @@ def emit_rich_text_block(
     surface_tokens: dict[str, str] | None = None,
     slide_position: int = 0,
 ) -> OutputShapeAddress:
-    """Emit one authored rich text block as a single native frame.
+    """One native frame; exact paragraph-atom character ranges, no fake run atoms."""
+    from types import SimpleNamespace
 
-    Several source spans are assembled into one ``p:sp``/``txBody`` with
-    real paragraph boundaries and per-run resolved styles (§3.2/§3.3).
-    Frame insets are written once for the authored block; paragraph spacing
-    and list indents govern internal flow. Every source span keeps an
-    addressable binding (``source_ref`` + paragraph index).
-    """
-    shape = adapter.add_textbox(
-        slide,
-        int(box_emu.get("x", 914400)), int(box_emu.get("y", 914400)),
-        int(box_emu.get("w", 3657600)), int(box_emu.get("h", 914400)),
-    )
+    from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+    from pptx.util import Pt
+
+    if set(box_emu) < {"x", "y", "w", "h"} or box_emu.get("w", 0) <= 0 or box_emu.get("h", 0) <= 0:
+        raise ValueError("RICH_TEXT_GEOMETRY_REQUIRED")
+    shape = adapter.add_textbox(slide, box_emu["x"], box_emu["y"], box_emu["w"], box_emu["h"])
     adapter.set_no_autofit(shape)
     adapter.strip_shape_effect_inheritance(shape)
-    with contextlib.suppress(Exception):
-        shape.fill.background()
-    with contextlib.suppress(Exception):
-        shape.line.fill.background()
-
-    style = _role_style(role, rules) if rules is not None else {}
+    shape.fill.background()
+    shape.line.fill.background()
     tokens = surface_tokens or {}
-    for key in ("foreground_token", "surface_token", "stroke_token"):
-        token = str(tokens.get(key, "") or "")
-        if not token or rules is None:
-            continue
-        rgb = _resolve_token_rgb(token, rules)
-        if rgb and key == "foreground_token":
-            style = {**style, "resolved_rgb": rgb}
-        elif not rgb:
-            context.issues.append(
-                f"SURFACE_TOKEN_UNKNOWN: {node_id} {key} token "
-                f"{token!r} not in the loaded palette")
+    role_cache = {}
 
+    def resolve_role(name):
+        if name in role_cache:
+            return role_cache[name]
+        style = _role_style(name, rules) if rules is not None else {}
+        if rules is not None:
+            if not style:
+                raise ValueError(f"STYLE_ROLE_UNBOUND:{name}")
+            colors = style.get("color_tokens", []) or []
+            token = str(tokens.get("foreground_token", "") or (colors[0] if colors else ""))
+            # A role may declare no color token at all (the loaded ontology
+            # keeps color_tokens empty for most roles): then the block keeps
+            # the inherited authoring foreground and no color is invented.
+            # A token that IS declared must exist in the loaded palette; an
+            # unknown one is recorded and never guessed.
+            if token:
+                rgb = _resolve_token_rgb(token, rules)
+                if rgb:
+                    style = {**style, "resolved_rgb": rgb}
+                else:
+                    context.issues.append(
+                        f"SURFACE_TOKEN_UNKNOWN: {node_id or 'rich_text_block'} role "
+                        f"{name!r} color token {token!r} not in the loaded palette; "
+                        "role color kept"
+                    )
+        role_cache[name] = style
+        return style
+
+    resolve_role(role)
     tf = shape.text_frame
     tf.word_wrap = True
-    # Insets are a property of the authored block, paid exactly once (§5.2).
-    for attr, pt in (("margin_left", 7.2), ("margin_right", 7.2),
-                     ("margin_top", 3.6), ("margin_bottom", 3.6)):
-        emu = int(round(pt * 12700))
-        with contextlib.suppress(Exception):
-            setattr(tf, attr, emu)
-
-    first = True
+    tf.vertical_anchor = MSO_ANCHOR.TOP
+    for attr, pt in (
+        ("margin_left", 7.2),
+        ("margin_right", 7.2),
+        ("margin_top", 3.6),
+        ("margin_bottom", 3.6),
+    ):
+        setattr(tf, attr, Pt(pt))
     for pidx, para in enumerate(paragraphs):
-        p = tf.paragraphs[0] if first else tf.add_paragraph()
-        first = False
-        p.alignment = None
-        source_ref = str(para.get("source_ref", "") or node_id)
-        para_id = str(para.get("id", "") or f"{source_ref}:{pidx}")
-        # Per-paragraph spacing is applied once, from the authored spec.
-        for attr, key in (("space_before", "space_before_pt"),
-                          ("space_after", "space_after_pt")):
-            value = para.get(key)
-            if value:
-                with contextlib.suppress(Exception):
-                    setattr(p, attr, float(value))
-        line_spacing = para.get("line_spacing_value")
-        if line_spacing:
-            with contextlib.suppress(Exception):
-                p.line_spacing = float(line_spacing)
-        for ridx, run_data in enumerate(para.get("runs", []) or [], start=1):
+        p = tf.paragraphs[0] if pidx == 0 else tf.add_paragraph()
+        p.alignment = {
+            "left": PP_ALIGN.LEFT,
+            "center": PP_ALIGN.CENTER,
+            "right": PP_ALIGN.RIGHT,
+            "justify": PP_ALIGN.JUSTIFY,
+        }.get(para.get("alignment", "left"), PP_ALIGN.LEFT)
+        p.space_before = Pt(float(para.get("space_before_pt", 0) or 0))
+        p.space_after = Pt(float(para.get("space_after_pt", 0) or 0))
+        spacing = para.get("line_spacing_value")
+        if spacing is not None:
+            p.line_spacing = (
+                Pt(float(spacing)) if para.get("line_spacing_mode") == "points" else float(spacing)
+            )
+        if para.get("list_kind", "none") != "none" and rules is not None:
+            data = dict(para)
+            if isinstance(data.get("numbering"), dict):
+                data["numbering"] = SimpleNamespace(**data["numbering"])
+            _apply_list_marker(p, SimpleNamespace(**data), rules, context)
+        para_role = str(para.get("role", "") or role)
+        cursor, spans = 0, {}
+        for run_data in para.get("runs", []) or []:
+            source_ref = str(run_data.get("source_ref", para.get("source_ref", node_id)) or "")
+            source_para = str(run_data.get("source_para_id", para.get("id", "")) or "")
+            run_role = str(run_data.get("role", "") or para_role)
+            style = {**resolve_role(run_role), **dict(run_data.get("style", {}) or {})}
+            kind = run_data.get("kind", "text")
             text = str(run_data.get("text", "") or "")
-            if not text:
-                continue
-            r = p.add_run()
-            display, _ = (apply_display_transform(text, role, rules)
-                          if rules is not None else (text, "identity"))
-            r.text = display
-            run_style = dict(style)
-            run_style.update(dict(run_data.get("style", {}) or {}))
-            _style_run(r, run_style, None)
-            _bind_atom(context, slide, shape, source_ref,
-                       str(run_data.get("id", "") or f"{para_id}:{ridx}"),
-                       f"para[{pidx}]/run[{ridx}]", "native_rebuild")
-        _bind_atom(context, slide, shape, source_ref, para_id,
-                   f"para[{pidx}]", "native_rebuild")
-
+            display, transform = (
+                apply_display_transform(text, run_role, rules)
+                if rules is not None
+                else (text, "identity")
+            )
+            semantic_marks = [SimpleNamespace(**m) for m in run_data.get("semantic_marks", [])]
+            start = cursor
+            if kind == "break":
+                _emit_break(
+                    p,
+                    SimpleNamespace(kind=run_data.get("break_kind", "soft")),
+                    source_para,
+                    context,
+                )
+                emitted_text = "\n"
+            elif kind == "field":
+                meta = run_data.get("field")
+                source_run = SimpleNamespace(
+                    text=text,
+                    field=SimpleNamespace(**meta) if meta else None,
+                    semantic_marks=semantic_marks,
+                )
+                _emit_field(p, source_run, style)
+                emitted_text = str((meta or {}).get("cached_text") or text)
+            else:
+                native_run = p.add_run()
+                native_run.text = display
+                _style_run(native_run, style, SimpleNamespace(semantic_marks=semantic_marks))
+                emitted_text = display
+                link_data = run_data.get("hyperlink")
+                if link_data:
+                    link = SimpleNamespace(**link_data)
+                    if getattr(link, "uri", None):
+                        native_run.hyperlink.address = link.uri
+                    elif getattr(link, "target_slide_ref", None):
+                        _emit_internal_run_link(
+                            native_run,
+                            shape,
+                            pidx,
+                            len(p.runs),
+                            slide,
+                            context,
+                            link,
+                            slide_position=slide_position,
+                            run_id=str(run_data.get("id", "")),
+                        )
+                    _bind_atom(
+                        context,
+                        slide,
+                        shape,
+                        source_ref,
+                        f"{run_data.get('id', '')}#hyperlink",
+                        f"para[{pidx}]/hyperlink_at[{start}]",
+                        "style_only",
+                    )
+            cursor += len(emitted_text)
+            if source_para:
+                span = spans.setdefault(
+                    source_para,
+                    {"ref": source_ref, "start": start, "end": cursor, "transform": transform},
+                )
+                if span["transform"] != transform:
+                    raise ValueError(f"MIXED_SOURCE_PARAGRAPH_TRANSFORM:{source_para}")
+                span["end"] = cursor
+        if not spans and para.get("id"):
+            spans[str(para["id"])] = {
+                "ref": str(para.get("source_ref", node_id)),
+                "start": 0,
+                "end": 0,
+                "transform": "identity",
+            }
+        for atom, span in spans.items():
+            _bind_atom(
+                context,
+                slide,
+                shape,
+                span["ref"],
+                atom,
+                f"para[{pidx}]/chars[{span['start']}:{span['end']}]",
+                "title_uppercase" if span["transform"] == "title_uppercase" else "native_rebuild",
+            )
     address = _address_of(slide, shape, "text")
-    context.emission_records.append(EmissionRecord(
-        source_object_id=node_id or paragraphs[0].get("source_ref", ""),
-        strategy="native_rich_block", address=address))
-    context.issues.append(
-        f"RICH_TEXT_BLOCK_EMITTED: {node_id} spans="
-        f"{len({str(p.get('source_ref', '')) for p in paragraphs})} "
-        f"paragraphs={len(paragraphs)}")
+    context.emission_records.append(
+        EmissionRecord(source_object_id=node_id, strategy="native_rich_block", address=address)
+    )
     return address
 
 
 def _emit_field(p: Any, run: Any, style: dict[str, Any]) -> None:
     """Append a real ``a:fld`` element preserving id/type/cached text."""
     meta = getattr(run, "field", None)
-    cached = (getattr(meta, "cached_text", None) or getattr(run, "text", "")
-              or "")
+    cached = getattr(meta, "cached_text", None) or getattr(run, "text", "") or ""
     fld = etree.SubElement(p._p, f"{{{A_NS}}}fld")
     if meta is not None:
         if getattr(meta, "field_id", ""):
             fld.set("id", str(meta.field_id))
         if getattr(meta, "field_type", ""):
             fld.set("type", str(meta.field_type))
-    rpr = etree.SubElement(fld, f"{{{A_NS}}}rPr")
-    if style.get("default_size_pt"):
-        with contextlib.suppress(TypeError, ValueError):
-            rpr.set("sz", str(int(float(style["default_size_pt"]) * 100)))
-    face = _role_face(style)
-    if face:
-        latin = etree.SubElement(rpr, f"{{{A_NS}}}latin")
-        latin.set("typeface", face)
+    carrier = p.add_run()
+    _style_run(carrier, style, run)
+    source_rpr = carrier._r.get_or_add_rPr()
+    import copy
+
+    fld.append(copy.deepcopy(source_rpr))
+    p._p.remove(carrier._r)
     t_node = etree.SubElement(fld, f"{{{A_NS}}}t")
     t_node.text = str(cached)
 
@@ -424,8 +532,23 @@ def _emit_break(p: Any, br: Any, scope: str, context: Any) -> None:
     if getattr(br, "kind", "soft") == "hard":
         context.issues.append(
             f"hard break in {scope}: no reader path produces hard breaks; "
-            "recorded as needs_review, emitted as soft token")
+            "recorded as needs_review, emitted as soft token"
+        )
     etree.SubElement(p._p, f"{{{A_NS}}}br")
+
+
+def set_slide_background(slide: Any, rgb_hex: str, source_ref: str, context: Any) -> None:
+    """Fill the slide backdrop with a normative solid color (§6.4).
+
+    A dark brand surface is content: a white logo and light text need it
+    the way body text needs its frame. The RGB always comes from a loaded
+    palette token resolved by the caller, never from a source literal.
+    """
+    from pptx.dml.color import RGBColor
+
+    slide.background.fill.solid()
+    slide.background.fill.fore_color.rgb = RGBColor.from_string(rgb_hex)
+    context.issues.append(f"BACKGROUND_APPLIED: {source_ref} slide backdrop -> #{rgb_hex}")
 
 
 def _resolve_token_rgb(token: Any, rules: Any) -> str | None:
@@ -453,8 +576,7 @@ def _resolve_token_rgb(token: Any, rules: Any) -> str | None:
 
 def _role_face(style: dict[str, Any]) -> str:
     """Exact corporate face for a role style (normative, never themed)."""
-    face = style.get("typeface") or (
-        (style.get("allowed_faces") or [None])[0])
+    face = style.get("typeface") or ((style.get("allowed_faces") or [None])[0])
     return str(face) if face else ""
 
 
@@ -470,12 +592,15 @@ def _style_run(run: Any, style: dict[str, Any], source_run: Any) -> None:
     if size:
         try:
             from pptx.util import Pt
+
             font.size = Pt(float(size))
         except (TypeError, ValueError):
             pass
-    rgb = _hex_to_rgb(style.get("resolved_rgb") or
-                      ((style.get("color_tokens") or [None])[0]
-                       if style.get("color_tokens") else None))
+    rgb = _hex_to_rgb(
+        style.get("resolved_rgb")
+        or style.get("color_rgb")
+        or ((style.get("color_tokens") or [None])[0] if style.get("color_tokens") else None)
+    )
     # Recovery §5 (resolve_authoring_style): every authoring run carries an
     # explicit approved foreground. Roles without color_tokens fall back to
     # the normative black token (000000 from the loaded palette), never to
@@ -483,6 +608,7 @@ def _style_run(run: Any, style: dict[str, Any], source_run: Any) -> None:
     if rgb is None:
         rgb = (0, 0, 0)
     from pptx.dml.color import RGBColor
+
     font.color.rgb = RGBColor(*rgb)
     # Recovery §5: source bold/italic NEVER pass through as b/i flags.
     # Source emphasis is a semantic hint resolved upstream into an exact
@@ -502,15 +628,16 @@ def _style_run(run: Any, style: dict[str, Any], source_run: Any) -> None:
         evidence = getattr(mark, "evidence_ref", "") or ""
         if evidence.startswith("baseline="):
             with contextlib.suppress(ValueError, AttributeError):
-                run._r.get_or_add_rPr().set(
-                    "baseline", str(int(evidence.split("=", 1)[1])))
+                run._r.get_or_add_rPr().set("baseline", str(int(evidence.split("=", 1)[1])))
 
 
-def _apply_list_marker(paragraph: Any, para_ir: Any, rules: Any,
-                        context: NativeDeckContext | None = None) -> None:
+def _apply_list_marker(
+    paragraph: Any, para_ir: Any, rules: Any, context: NativeDeckContext | None = None
+) -> None:
     """Apply the loaded LS01 bullet profile (no literals; see bullets.py)."""
     try:
         from .bullets import apply_ls01_paragraph, resolve_list_level
+
         profile = getattr(context, "list_profile", None) if context else None
         if profile is None:
             lists = getattr(rules, "lists", {}) or {}
@@ -534,12 +661,21 @@ def _apply_list_marker(paragraph: Any, para_ir: Any, rules: Any,
         log.warning("list profile application failed: %s", exc)
 
 
-def _emit_internal_run_link(run: Any, shape: Any, pidx: int, ridx: int,
-                            slide: Any, context: NativeDeckContext,
-                            link: Any, *, slide_position: int,
-                            run_id: str) -> None:
+def _emit_internal_run_link(
+    run: Any,
+    shape: Any,
+    pidx: int,
+    ridx: int,
+    slide: Any,
+    context: NativeDeckContext,
+    link: Any,
+    *,
+    slide_position: int,
+    run_id: str,
+) -> None:
     """Write a provisional internal hlinkClick; wired in final assembly."""
     from pptx.oxml.ns import qn
+
     rPr = run._r.get_or_add_rPr()
     hlink = rPr.find(qn("a:hlinkClick"))
     if hlink is None:
@@ -550,33 +686,54 @@ def _emit_internal_run_link(run: Any, shape: Any, pidx: int, ridx: int,
         shape_id = int(shape.shape_id)
     except (TypeError, ValueError):
         shape_id = 0
-    context.pending_hyperlinks.append({
-        "kind": "internal", "target_ref": link.target_slide_ref,
-        "run_id": run_id, "rid": rid, "slide_position": slide_position,
-        "shape_id": shape_id, "para_idx": pidx, "run_idx": ridx,
-    })
+    context.pending_hyperlinks.append(
+        {
+            "kind": "internal",
+            "target_ref": link.target_slide_ref,
+            "run_id": run_id,
+            "rid": rid,
+            "slide_position": slide_position,
+            "shape_id": shape_id,
+            "para_idx": pidx,
+            "run_idx": ridx,
+        }
+    )
 
 
-def _bind_atom(context: NativeDeckContext, slide: Any, shape: Any,
-               source_object_id: str, atom_id: str, sub: str,
-               transform: str = "identity") -> None:
+def _bind_atom(
+    context: NativeDeckContext,
+    slide: Any,
+    shape: Any,
+    source_object_id: str,
+    atom_id: str,
+    sub: str,
+    transform: str = "identity",
+) -> None:
     """Bind one ledger atom id to its real output subaddress (§2.1)."""
     if not atom_id:
         atom_id = source_object_id
-    context.output_map.append(OutputSubBinding(
-        source_atom_id=atom_id,
-        target_address=_address_of(slide, shape, "text"),
-        target_subaddress=sub,
-        origin="exporter",
-        transform=transform,  # type: ignore[arg-type]
-        evidence=[f"obj:{source_object_id}"],
-    ))
+    context.output_map.append(
+        OutputSubBinding(
+            source_atom_id=atom_id,
+            target_address=_address_of(slide, shape, "text"),
+            target_subaddress=sub,
+            origin="exporter",
+            transform=transform,  # type: ignore[arg-type]
+            evidence=[f"obj:{source_object_id}"],
+        )
+    )
 
 
-def _bind(context: NativeDeckContext, slide: Any, shape: Any,
-          source_object_id: str, atom_id: str, sub: str, order: int) -> None:
-    _bind_atom(context, slide, shape, source_object_id, atom_id,
-               f"{sub}[{order}]")
+def _bind(
+    context: NativeDeckContext,
+    slide: Any,
+    shape: Any,
+    source_object_id: str,
+    atom_id: str,
+    sub: str,
+    order: int,
+) -> None:
+    _bind_atom(context, slide, shape, source_object_id, atom_id, f"{sub}[{order}]")
 
 
 def _address_of(slide: Any, shape: Any, kind: str) -> OutputShapeAddress:
@@ -588,13 +745,13 @@ def _address_of(slide: Any, shape: Any, kind: str) -> OutputShapeAddress:
         shape_id = int(shape.shape_id)
     except (TypeError, ValueError):
         shape_id = 0
-    return OutputShapeAddress(slide_part=part, shape_id=shape_id,
-                              group_path=[], kind=kind)
+    return OutputShapeAddress(slide_part=part, shape_id=shape_id, group_path=[], kind=kind)
 
 
 # ---------------------------------------------------------------------------
 # §7 tables
 # ---------------------------------------------------------------------------
+
 
 def emit_table(
     payload: Any,
@@ -612,9 +769,13 @@ def emit_table(
         raise ValueError(f"invalid table grid {rows}x{cols}")
     box = layout.get("box_emu") or {}
     frame = adapter.add_table(
-        slide, rows, cols,
-        int(box.get("x", 914400)), int(box.get("y", 914400)),
-        int(box.get("w", 5486400)), int(box.get("h", 2743200)),
+        slide,
+        rows,
+        cols,
+        int(box.get("x", 914400)),
+        int(box.get("y", 914400)),
+        int(box.get("w", 5486400)),
+        int(box.get("h", 2743200)),
     )
     table = frame.table
     widths = list(getattr(payload, "column_widths_emu", []) or [])
@@ -622,6 +783,7 @@ def emit_table(
         for idx, width in enumerate(widths):
             try:
                 from pptx.util import Emu
+
                 table.columns[idx].width = Emu(int(width))
             except (TypeError, ValueError):
                 pass
@@ -633,14 +795,14 @@ def emit_table(
                 table.cell(r0, c0).merge(table.cell(r1, c1))
             except (IndexError, ValueError) as exc:
                 context.issues.append(f"table merge failed {(r0, c0, r1, c1)}: {exc}")
-    by_coord = {(int(c.row), int(c.col)): c
-                for c in list(getattr(payload, "cells", []) or [])}
+    by_coord = {(int(c.row), int(c.col)): c for c in list(getattr(payload, "cells", []) or [])}
     # Measured row heights (Stage 5 typed binding); absent without layout.
     heights = list(getattr(payload, "row_heights_emu", []) or [])
     if len(heights) == rows:
         for idx, height in enumerate(heights):
             try:
                 from pptx.util import Emu
+
                 table.rows[idx].height = Emu(int(height))
             except (TypeError, ValueError):
                 context.issues.append(f"table row height failed {idx}")
@@ -669,23 +831,28 @@ def emit_table(
                     r = p.add_run()
                     r.text = str(getattr(run, "text", ""))
                     _style_run(r, style, run)
-        context.output_map.append(OutputSubBinding(
-            source_atom_id=getattr(cell, "id", f"cell-{row}-{col}"),
-            target_address=_address_of(slide, frame, "table"),
-            target_subaddress=f"cell[{row},{col}]",
-            origin="exporter",
-            evidence=[f"obj:{source_object_id}"],
-        ))
+        context.output_map.append(
+            OutputSubBinding(
+                source_atom_id=getattr(cell, "id", f"cell-{row}-{col}"),
+                target_address=_address_of(slide, frame, "table"),
+                target_subaddress=f"cell[{row},{col}]",
+                origin="exporter",
+                evidence=[f"obj:{source_object_id}"],
+            )
+        )
     address = _address_of(slide, frame, "table")
-    context.emission_records.append(EmissionRecord(
-        source_object_id=source_object_id, strategy="native_rebuild",
-        address=address))
+    context.emission_records.append(
+        EmissionRecord(
+            source_object_id=source_object_id, strategy="native_rebuild", address=address
+        )
+    )
     return address
 
 
 # ---------------------------------------------------------------------------
 # §8 charts
 # ---------------------------------------------------------------------------
+
 
 def snapshot_chart_semantics(chart_part_xml: bytes) -> dict[str, Any]:
     """Snapshot plot/series/axis semantics of one chart part.
@@ -701,8 +868,7 @@ def snapshot_chart_semantics(chart_part_xml: bytes) -> dict[str, Any]:
         return {"parse_error": str(exc)}
     chart = root.find(f".//{{{C_NS}}}chart")
     if chart is None:
-        return {"plots": [], "axes": [],
-                "sha256": hashlib.sha256(chart_part_xml).hexdigest()}
+        return {"plots": [], "axes": [], "sha256": hashlib.sha256(chart_part_xml).hexdigest()}
     area = chart.find(f"{{{C_NS}}}plotArea")
     plots: list[dict[str, Any]] = []
     axes: list[dict[str, Any]] = []
@@ -719,15 +885,16 @@ def snapshot_chart_semantics(chart_part_xml: bytes) -> dict[str, Any]:
                 continue
             series = child.findall(f"{{{C_NS}}}ser")
             ax_ids = [n.text or "" for n in child.findall(f"{{{C_NS}}}axId")]
-            plots.append({"plot": local,
-                          "series_count": len(series),
-                          "series_idx": [s.findtext(f"{{{C_NS}}}idx", default="")
-                                         for s in series],
-                          "axIds": ax_ids,
-                          "grouping": child.findtext(f"{{{C_NS}}}grouping",
-                                                    default="")})
-    return {"plots": plots, "axes": axes,
-            "sha256": hashlib.sha256(chart_part_xml).hexdigest()}
+            plots.append(
+                {
+                    "plot": local,
+                    "series_count": len(series),
+                    "series_idx": [s.findtext(f"{{{C_NS}}}idx", default="") for s in series],
+                    "axIds": ax_ids,
+                    "grouping": child.findtext(f"{{{C_NS}}}grouping", default=""),
+                }
+            )
+    return {"plots": plots, "axes": axes, "sha256": hashlib.sha256(chart_part_xml).hexdigest()}
 
 
 def emit_existing_chart(
@@ -754,15 +921,16 @@ def emit_existing_chart(
     if context.transplant_context is None:
         parts, ctypes, outgoing, phash = load_source_package(source_package_path)
         context.transplant_context = TransplantContext(
-            source_package_hash=phash, source_parts=parts,
-            source_content_types=ctypes, source_outgoing=outgoing)
+            source_package_hash=phash,
+            source_parts=parts,
+            source_content_types=ctypes,
+            source_outgoing=outgoing,
+        )
     tctx = context.transplant_context
     before = snapshot_chart_semantics(tctx.source_parts.get(chart_part, b""))
     result = clone_part_graph(chart_part, tctx, variant="src")
     if [i for i in result.issues if "UNRESOLVED" in i.code or "MISSING" in i.code]:
-        raise ValueError(
-            f"chart closure has blocking issues: "
-            f"{[i.code for i in result.issues]}")
+        raise ValueError(f"chart closure has blocking issues: {[i.code for i in result.issues]}")
     target_chart = result.actual_root_part
     cloned = bytearray(tctx.target_payloads[target_chart])
     _normalize_chart_style(cloned, context)
@@ -770,18 +938,29 @@ def emit_existing_chart(
     after = snapshot_chart_semantics(bytes(cloned))
     if before.get("plots") != after.get("plots"):
         raise ValueError("chart style normalization changed plot semantics")
-    context.chart_semantic_diffs.append({
-        "source_chart": chart_part, "target_chart": target_chart,
-        "before": before, "after": after,
-        "workbook_sha256": _workbook_hash(payload, tctx),
-        "replace_data_used": False,
-    })
+    context.chart_semantic_diffs.append(
+        {
+            "source_chart": chart_part,
+            "target_chart": target_chart,
+            "before": before,
+            "after": after,
+            "workbook_sha256": _workbook_hash(payload, tctx),
+            "replace_data_used": False,
+        }
+    )
     # Graphic frame: deep-copy the source frame subtree into the output
     # slide with resolved geometry and a fresh owner-scoped chart rId.
     box = resolved.get("box_emu") or {}
     shape = _insert_chart_frame(
-        slide, source_package_path, source_slide_part, chart_part, box,
-        context, target_chart, slide_position=slide_position)
+        slide,
+        source_package_path,
+        source_slide_part,
+        chart_part,
+        box,
+        context,
+        target_chart,
+        slide_position=slide_position,
+    )
     context.part_contracts.extend(result.contracts)
     address = _address_of(slide, shape, "chart")
     # Series/point/category bindings keep plot scope from the IR payload.
@@ -789,20 +968,25 @@ def emit_existing_chart(
     order = 0
     for sidx, series in enumerate(list(getattr(payload, "series", []) or [])):
         for point in list(getattr(series, "points", []) or []):
-            context.output_map.append(OutputSubBinding(
-                source_atom_id=getattr(point, "id", f"pt-{order}"),
-                target_address=address,
-                target_subaddress=(
-                    f"series[{sidx}]:"
-                    f"{getattr(series, 'name', getattr(series, 'id', ''))}"
-                    f"/point[{getattr(point, 'index', order)}]"),
-                origin="exporter",
-                evidence=[f"obj:{source_object_id}"],
-            ))
+            context.output_map.append(
+                OutputSubBinding(
+                    source_atom_id=getattr(point, "id", f"pt-{order}"),
+                    target_address=address,
+                    target_subaddress=(
+                        f"series[{sidx}]:"
+                        f"{getattr(series, 'name', getattr(series, 'id', ''))}"
+                        f"/point[{getattr(point, 'index', order)}]"
+                    ),
+                    origin="exporter",
+                    evidence=[f"obj:{source_object_id}"],
+                )
+            )
             order += 1
-    context.emission_records.append(EmissionRecord(
-        source_object_id=source_object_id, strategy="native_transplant",
-        address=address))
+    context.emission_records.append(
+        EmissionRecord(
+            source_object_id=source_object_id, strategy="native_transplant", address=address
+        )
+    )
     workbook_hash = _workbook_hash(payload, tctx)
     if workbook_hash:
         context.issues.append(f"chart_workbook={workbook_hash[:16]}")
@@ -821,8 +1005,7 @@ def _normalize_chart_style(cloned: bytearray, context: NativeDeckContext) -> Non
             latin = rpr.find(f"{{{A_NS}}}latin")
             if latin is not None and context.active_template_profile is not None:
                 pass  # hooked to template fonts when profile declares them
-    cloned[:] = etree.tostring(root, xml_declaration=True, encoding="UTF-8",
-                               standalone=True)
+    cloned[:] = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
 
 
 def _workbook_hash(payload: Any, tctx: TransplantContext) -> str:
@@ -832,7 +1015,8 @@ def _workbook_hash(payload: Any, tctx: TransplantContext) -> str:
 
 
 def _find_source_graphic_frame(
-    source_slide_xml: bytes, chart_part: str,
+    source_slide_xml: bytes,
+    chart_part: str,
     source_outgoing: dict[str, list[dict]],
     source_slide_part: str,
 ) -> Any | None:
@@ -841,9 +1025,11 @@ def _find_source_graphic_frame(
         root = parse_xml(source_slide_xml)
     except Exception:
         return None
-    wanted = {rel["id"] for rel in source_outgoing.get(source_slide_part, [])
-              if rel["mode"].lower() != "external" and
-              _resolve_src(rel, source_slide_part) == chart_part}
+    wanted = {
+        rel["id"]
+        for rel in source_outgoing.get(source_slide_part, [])
+        if rel["mode"].lower() != "external" and _resolve_src(rel, source_slide_part) == chart_part
+    }
     for frame in root.findall(f".//{{{P_NS}}}graphicFrame"):
         for node in frame.iter():
             for attr in (f"{{{R_NS}}}id", f"{{{R_NS}}}embed"):
@@ -873,15 +1059,20 @@ def _insert_chart_frame(
     tctx = context.transplant_context
     assert tctx is not None
     src_xml = tctx.source_parts.get(source_slide_part)
-    frame = (_find_source_graphic_frame(src_xml, chart_part,
-                                        tctx.source_outgoing, source_slide_part)
-             if src_xml else None)
+    frame = (
+        _find_source_graphic_frame(src_xml, chart_part, tctx.source_outgoing, source_slide_part)
+        if src_xml
+        else None
+    )
     if frame is None:
-        context.issues.append(
-            f"chart frame for {chart_part} not found; anchor fallback")
+        context.issues.append(f"chart frame for {chart_part} not found; anchor fallback")
         return adapter.add_textbox(
-            slide, int(box.get("x", 914400)), int(box.get("y", 914400)),
-            int(box.get("w", 5486400)), int(box.get("h", 2743200)))
+            slide,
+            int(box.get("x", 914400)),
+            int(box.get("y", 914400)),
+            int(box.get("w", 5486400)),
+            int(box.get("h", 2743200)),
+        )
     new_el = deepcopy(frame)
     # Resolved geometry on the frame xfrm.
     xfrm = new_el.find(f".//{{{A_NS}}}xfrm")
@@ -919,11 +1110,13 @@ def _insert_chart_frame(
         context.issues.append(f"no c:chart node in transplanted frame {chart_part}")
     slide.shapes._spTree.append(new_el)
     shape = list(slide.shapes)[-1]
-    context.pending_chart_frames.append({
-        "slide_position": slide_position,
-        "rid": rid,
-        "target_chart": target_chart,
-    })
+    context.pending_chart_frames.append(
+        {
+            "slide_position": slide_position,
+            "rid": rid,
+            "target_chart": target_chart,
+        }
+    )
     return shape
 
 
@@ -962,43 +1155,52 @@ def emit_new_chart(
                 proxy = chart_data.add_series(s.name or s.id)
                 for p in s.points:
                     if p.x and p.x.decimal and p.y and p.y.decimal:
-                        size = float(p.bubble_size.decimal) \
-                            if p.bubble_size and p.bubble_size.decimal else 1.0
-                        proxy.add_data_point(float(p.x.decimal),
-                                             float(p.y.decimal), size)
+                        size = (
+                            float(p.bubble_size.decimal)
+                            if p.bubble_size and p.bubble_size.decimal
+                            else 1.0
+                        )
+                        proxy.add_data_point(float(p.x.decimal), float(p.y.decimal), size)
         else:
             chart_data = XyChartData()
             for s in series:
                 proxy = chart_data.add_series(s.name or s.id)
                 for p in s.points:
                     if p.x and p.x.decimal and p.y and p.y.decimal:
-                        proxy.add_data_point(float(p.x.decimal),
-                                             float(p.y.decimal))
+                        proxy.add_data_point(float(p.x.decimal), float(p.y.decimal))
     else:
         chart_data = CategoryChartData()
-        labels = [c.path[-1] if c.path else (c.raw_value or f"c{c.index}")
-                  for c in categories]
+        labels = [c.path[-1] if c.path else (c.raw_value or f"c{c.index}") for c in categories]
         if labels:
             chart_data.categories = labels
         for s in series:
-            values = [float(p.value.decimal) if p.value and p.value.decimal else None
-                      for p in s.points]
+            values = [
+                float(p.value.decimal) if p.value and p.value.decimal else None for p in s.points
+            ]
             chart_data.add_series(s.name or s.id, values)
     box = resolved.get("box_emu") or {}
     frame = adapter.add_chart_from_verified_data(
-        slide, chart_type, chart_data,
-        int(box.get("x", 914400)), int(box.get("y", 914400)),
-        int(box.get("w", 5486400)), int(box.get("h", 2743200)))
+        slide,
+        chart_type,
+        chart_data,
+        int(box.get("x", 914400)),
+        int(box.get("y", 914400)),
+        int(box.get("w", 5486400)),
+        int(box.get("h", 2743200)),
+    )
     address = _address_of(slide, frame, "chart")
-    context.emission_records.append(EmissionRecord(
-        source_object_id=source_object_id, strategy="native_rebuild",
-        address=address))
+    context.emission_records.append(
+        EmissionRecord(
+            source_object_id=source_object_id, strategy="native_rebuild", address=address
+        )
+    )
     return address
 
 
 # ---------------------------------------------------------------------------
 # §9 shapes, groups, images, connectors
 # ---------------------------------------------------------------------------
+
 
 def emit_shape(
     payload: Any,
@@ -1008,25 +1210,34 @@ def emit_shape(
     *,
     rules: Any = None,
     source_object_id: str = "",
+    visual_plan: Any = None,
 ) -> OutputShapeAddress:
     box = resolved.get("box_emu") or {}
     text = getattr(payload, "text", None)
-    paras = list(getattr(text, "paragraphs", []) or []) \
-        if text is not None else []
-    has_text = any("".join(getattr(r, "text", "") or ""
-                           for r in list(getattr(p, "runs", []) or []))
-                   or getattr(getattr(r, "field", None), "cached_text", "")
-                   for p in paras for r in list(getattr(p, "runs", []) or []))
+    paras = list(getattr(text, "paragraphs", []) or []) if text is not None else []
+    has_text = any(
+        "".join(getattr(r, "text", "") or "" for r in list(getattr(p, "runs", []) or []))
+        or getattr(getattr(r, "field", None), "cached_text", "")
+        for p in paras
+        for r in list(getattr(p, "runs", []) or [])
+    )
     if text is not None and has_text:
         shape = adapter.add_textbox(
-            slide, int(box.get("x", 914400)), int(box.get("y", 914400)),
-            int(box.get("w", 1828800)), int(box.get("h", 914400)))
+            slide,
+            int(box.get("x", 914400)),
+            int(box.get("y", 914400)),
+            int(box.get("w", 1828800)),
+            int(box.get("h", 914400)),
+        )
         shape.text_frame.clear()
-        emit_text(text, {"box_emu": box,
-                         "role": resolved.get(
-                             "role", getattr(text, "role", "unknown"))},
-                  slide, context, rules=rules,
-                  source_object_id=source_object_id)
+        emit_text(
+            text,
+            {"box_emu": box, "role": resolved.get("role", getattr(text, "role", "unknown"))},
+            slide,
+            context,
+            rules=rules,
+            source_object_id=source_object_id,
+        )
         # Remove the placeholder box; emit_text created the real one.
         shape._element.getparent().remove(shape._element)
         record = context.emission_records[-1]
@@ -1044,66 +1255,110 @@ def emit_shape(
     if token == "roundRect":
         context.issues.append(
             f"GEOMETRY_NORMALIZED: {source_object_id} roundRect->rect "
-            "(C03 decorative rounded cards prohibited)")
+            "(C03 decorative rounded cards prohibited)"
+        )
     placeholder = adapter.add_textbox(
-        slide, int(box.get("x", 914400)), int(box.get("y", 914400)),
-        int(box.get("w", 1828800)), int(box.get("h", 914400)))
+        slide,
+        int(box.get("x", 914400)),
+        int(box.get("y", 914400)),
+        int(box.get("w", 1828800)),
+        int(box.get("h", 914400)),
+    )
     address = _address_of(slide, placeholder, "shape")
     try:
         if norm_token == "line":
             shape = adapter.add_straight_connector(
-                slide, int(box.get("x", 914400)), int(box.get("y", 914400)),
-                int(box.get("w", 1828800)), int(box.get("h", 914400)))
+                slide,
+                int(box.get("x", 914400)),
+                int(box.get("y", 914400)),
+                int(box.get("w", 1828800)),
+                int(box.get("h", 914400)),
+            )
         elif preset is not None:
             shape = adapter.add_autoshape(
-                slide, preset, int(box.get("x", 914400)),
-                int(box.get("y", 914400)), int(box.get("w", 1828800)),
-                int(box.get("h", 914400)))
+                slide,
+                preset,
+                int(box.get("x", 914400)),
+                int(box.get("y", 914400)),
+                int(box.get("w", 1828800)),
+                int(box.get("h", 914400)),
+            )
         else:
             context.issues.append(
                 f"GEOMETRY_UNKNOWN: {source_object_id} token {token!r}; "
-                "rect fallback recorded, not a silent pass")
+                "rect fallback recorded, not a silent pass"
+            )
             shape = adapter.add_autoshape(
-                slide, "RECTANGLE", int(box.get("x", 914400)),
-                int(box.get("y", 914400)), int(box.get("w", 1828800)),
-                int(box.get("h", 914400)))
-        _apply_decor_fill_line(shape, payload, norm_token, source_object_id,
-                               context, rules=rules,
-                               surface=resolved.get("surface_token", ""),
-                               stroke_token=resolved.get("stroke_token", ""))
+                slide,
+                "RECTANGLE",
+                int(box.get("x", 914400)),
+                int(box.get("y", 914400)),
+                int(box.get("w", 1828800)),
+                int(box.get("h", 914400)),
+            )
+        _apply_decor_fill_line(
+            shape,
+            payload,
+            norm_token,
+            source_object_id,
+            context,
+            rules=rules,
+            surface=resolved.get("surface_token", ""),
+            stroke_token=resolved.get("stroke_token", ""),
+            visual_plan=visual_plan,
+        )
         adapter.strip_shape_effect_inheritance(shape)
         placeholder._element.getparent().remove(placeholder._element)
     except Exception as exc:  # noqa: BLE001 - decor must not kill export
         context.issues.append(f"decor emit failed {source_object_id}: {exc}")
         return address
-    address = _address_of(slide, shape,
-                          "connector" if token == "line" else "shape")
-    context.emission_records.append(EmissionRecord(
-        source_object_id=source_object_id, strategy="native_rebuild",
-        address=address))
-    _bind_atom(context, slide, shape, source_object_id,
-               f"{source_object_id}#shape", "geometry", "relocate")
+    address = _address_of(slide, shape, "connector" if token == "line" else "shape")
+    context.emission_records.append(
+        EmissionRecord(
+            source_object_id=source_object_id, strategy="native_rebuild", address=address
+        )
+    )
+    _bind_atom(
+        context, slide, shape, source_object_id, f"{source_object_id}#shape", "geometry", "relocate"
+    )
     # Empty text payloads still own ledger atoms (canonical ""); bind them
     # so the preservation gate sees them, never as silent drops.
     for pidx, para in enumerate(paras):
         para_id = getattr(para, "id", "")
         if para_id:
-            _bind_atom(context, slide, shape, source_object_id, para_id,
-                       f"para[{pidx}]", "identity")
+            _bind_atom(
+                context, slide, shape, source_object_id, para_id, f"para[{pidx}]", "identity"
+            )
     return address
 
 
-def _apply_decor_fill_line(shape: Any, payload: Any, token: str,
-                           source_object_id: str, context: Any,
-                           rules: Any = None, surface: Any = "",
-                           stroke_token: Any = "") -> None:
-    """Normative decor fill/line (recovery §5): no source passthrough.
+def _apply_decor_fill_line(
+    shape: Any,
+    payload: Any,
+    token: str,
+    source_object_id: str,
+    context: Any,
+    rules: Any = None,
+    surface: Any = "",
+    stroke_token: Any = "",
+    visual_plan: Any = None,
+) -> None:
+    """Execute the PRE-DECIDED visual normalization plan (§6.2, §10.1).
 
-    Source fills such as 0C539F are forensic evidence, never target style
-    defaults. Decorative autoshapes get no fill (background) and connectors
-    keep a normative line only when its color is in the loaded palette;
-    otherwise the line is cleared. Every decision uses the ontology
-    snapshot palette — no literal allowlist lives here.
+    The renderer no longer decides meaning from a random source colour. The
+    recovery run cleared every stroke that was not in the palette, which
+    deleted the ГГД schematic on slide 3 and the source→processing→table
+    chain on slide 2 while the XML objects survived; the count was
+    preserved and the graph was not. ``visual_norm.plan_visual_normalization``
+    decides before emission and this function executes it:
+
+    * ``keep_native_recolor`` / ``redraw_native`` — apply the plan's
+      normative tokens; the source RGB is never restored.
+    * ``authorize_omit`` — optional decor: no stroke, no fill, recorded.
+    * ``unresolved`` on a REQUIRED unit — a blocking
+      ``VISUAL_REPRESENTATION_UNRESOLVED`` finding. The shape is left with
+      its geometry and NO styling is silently cleared, because a required
+      representation must never be discharged by invisible strokes.
     """
     from pptx.util import Emu
 
@@ -1118,8 +1373,27 @@ def _apply_decor_fill_line(shape: Any, payload: Any, token: str,
                 if rgb:
                     palette.add(str(rgb).strip().lstrip("#").upper())
     is_connector = token == "line"
-    surface_rgb = _resolve_token_rgb(surface, rules) if rules is not None \
+    surface_rgb = _resolve_token_rgb(surface, rules) if rules is not None else None
+    planned_stroke = (
+        _resolve_token_rgb(getattr(visual_plan, "stroke_token", ""), rules)
+        if (visual_plan is not None and rules is not None)
         else None
+    )
+    required_unit = True
+    plan_action = ""
+    plan_required = False
+    if visual_plan is not None:
+        plan_action = str(getattr(visual_plan, "action", "") or "")
+        if plan_action == "authorize_omit":
+            required_unit = False
+        if str(getattr(visual_plan, "action", "")) == "unresolved":
+            plan_required = True
+    else:
+        context.issues.append(
+            f"VISUAL_PLAN_MISSING: {source_object_id} reached the renderer "
+            "without a visual normalization plan; the renderer may not "
+            "decide meaning from the source colour"
+        )
     try:
         if is_connector:
             pass  # line handling below; connectors carry no fill
@@ -1128,43 +1402,69 @@ def _apply_decor_fill_line(shape: Any, payload: Any, token: str,
             # The RGB comes from the loaded JSON, never from the source
             # forensic fill and never from a literal in this module.
             from pptx.dml.color import RGBColor
+
             shape.fill.solid()
             shape.fill.fore_color.rgb = RGBColor.from_string(surface_rgb)
             context.issues.append(
-                f"SURFACE_APPLIED: {source_object_id} fill token "
-                f"{surface!r} -> #{surface_rgb}")
+                f"SURFACE_APPLIED: {source_object_id} fill token {surface!r} -> #{surface_rgb}"
+            )
         else:
             if str(surface or "").strip():
                 context.issues.append(
                     f"SURFACE_TOKEN_UNKNOWN: {source_object_id} surface "
                     f"token {surface!r} not in the loaded palette; "
-                    "normative no-fill applied")
+                    "normative no-fill applied"
+                )
             with contextlib.suppress(Exception):
                 shape.fill.background()
             context.issues.append(
                 f"DECOR_FILL_NORMALIZED: {source_object_id} source fill "
-                "dropped; normative no-fill applied (C01)")
+                "dropped; normative no-fill applied (C01)"
+            )
     except Exception as exc:  # noqa: BLE001 - keep geometry, flag style
+        context.issues.append(f"decor fill not normalized {source_object_id}: {exc}")
+    if not required_unit:
+        with contextlib.suppress(Exception):
+            shape.fill.background()
+        with contextlib.suppress(Exception):
+            shape.line.fill.background()
         context.issues.append(
-            f"decor fill not normalized {source_object_id}: {exc}")
+            f"DECOR_CLUSTER_OMITTED: {source_object_id} optional decor "
+            f"removed as a whole unit (plan={plan_action}); its space is "
+            "recomposed instead of leaving an empty frame"
+        )
+        return
+    if plan_required:
+        context.issues.append(
+            f"VISUAL_REPRESENTATION_UNRESOLVED: {source_object_id} is a "
+            "required visual unit with no applicable normative style token; "
+            "its strokes were left unstyled for inspection instead of being "
+            "cleared into an invisible frame (blocking)"
+        )
+        return
     line = getattr(payload, "source_line", None)
     color = getattr(line, "color", None) if line is not None else None
-    stroke_rgb = _resolve_token_rgb(stroke_token, rules) \
-        if rules is not None else None
+    stroke_rgb = planned_stroke
     try:
         val = stroke_rgb or (
             str(getattr(color, "value", "") or "").strip().lstrip("#").upper()
-            if color is not None else "")
+            if color is not None
+            else ""
+        )
         if stroke_rgb:
             from pptx.dml.color import RGBColor
+
             shape.line.color.rgb = RGBColor.from_string(stroke_rgb)
             context.issues.append(
                 f"STROKE_APPLIED: {source_object_id} stroke token "
-                f"{stroke_token!r} -> #{stroke_rgb}")
+                f"{getattr(visual_plan, 'stroke_token', '')!r} -> "
+                f"#{stroke_rgb}"
+            )
             return
         if color is not None and getattr(color, "kind", "") == "srgb" and val:
             if val in palette:
                 from pptx.dml.color import RGBColor
+
                 shape.line.color.rgb = RGBColor.from_string(val)
                 width = getattr(line, "width_emu", None)
                 if width:
@@ -1174,13 +1474,13 @@ def _apply_decor_fill_line(shape: Any, payload: Any, token: str,
                     shape.line.fill.background()
                 context.issues.append(
                     f"DECOR_LINE_NORMALIZED: {source_object_id} source line "
-                    f"{val} not in palette; cleared (C01)")
+                    f"{val} not in palette; cleared (C01)"
+                )
         elif color is None:
             with contextlib.suppress(Exception):
                 shape.line.fill.background()
     except Exception as exc:  # noqa: BLE001
-        context.issues.append(
-            f"decor line not normalized {source_object_id}: {exc}")
+        context.issues.append(f"decor line not normalized {source_object_id}: {exc}")
 
 
 def emit_group(
@@ -1197,23 +1497,39 @@ def emit_group(
         raise ValueError("group payload has no children")
     group = slide.shapes.add_group_shape()
     for cidx, child in enumerate(children):
-        _emit_group_child(group, child, resolved, slide, context,
-                          rules=rules, source_object_id=source_object_id,
-                          position=(cidx,), root_group=group)
+        _emit_group_child(
+            group,
+            child,
+            resolved,
+            slide,
+            context,
+            rules=rules,
+            source_object_id=source_object_id,
+            position=(cidx,),
+            root_group=group,
+        )
     _write_group_xfrm(group, payload, resolved)
     address = _address_of(slide, group, "group")
-    context.emission_records.append(EmissionRecord(
-        source_object_id=source_object_id, strategy="native_rebuild",
-        address=address))
+    context.emission_records.append(
+        EmissionRecord(
+            source_object_id=source_object_id, strategy="native_rebuild", address=address
+        )
+    )
     return address
 
 
-def _emit_group_child(group: Any, child: Any, resolved: dict[str, Any],
-                      slide: Any, context: NativeDeckContext, *,
-                      rules: Any = None,
-                      source_object_id: str = "",
-                      position: tuple[int, ...] = (),
-                      root_group: Any = None) -> None:
+def _emit_group_child(
+    group: Any,
+    child: Any,
+    resolved: dict[str, Any],
+    slide: Any,
+    context: NativeDeckContext,
+    *,
+    rules: Any = None,
+    source_object_id: str = "",
+    position: tuple[int, ...] = (),
+    root_group: Any = None,
+) -> None:
     """Emit one group child (recurses into nested groups).
 
     Bindings always address the slide-level ``root_group``; the position
@@ -1230,21 +1546,29 @@ def _emit_group_child(group: Any, child: Any, resolved: dict[str, Any],
             inner = getattr(payload, "text", None)
             text = getattr(inner, "paragraphs", []) if inner is not None else []
         if not text and kind == "shape":
-            context.output_map.append(OutputSubBinding(
-                source_atom_id=f"{getattr(child, 'id', '')}#shape",
-                target_address=_address_of(slide, anchor, "group"),
-                target_subaddress=f"group-child[{pos}]",
-                origin="exporter",
-                evidence=[f"obj:{getattr(child, 'id', '')}"],
-            ))
+            context.output_map.append(
+                OutputSubBinding(
+                    source_atom_id=f"{getattr(child, 'id', '')}#shape",
+                    target_address=_address_of(slide, anchor, "group"),
+                    target_subaddress=f"group-child[{pos}]",
+                    origin="exporter",
+                    evidence=[f"obj:{getattr(child, 'id', '')}"],
+                )
+            )
             sub = group.shapes.add_textbox(
-                adapter.Emu(child_box["x"]), adapter.Emu(child_box["y"]),
-                adapter.Emu(child_box["w"]), adapter.Emu(child_box["h"]))
+                adapter.Emu(child_box["x"]),
+                adapter.Emu(child_box["y"]),
+                adapter.Emu(child_box["w"]),
+                adapter.Emu(child_box["h"]),
+            )
             sub.text = ""
             return
         sub = group.shapes.add_textbox(
-            adapter.Emu(child_box["x"]), adapter.Emu(child_box["y"]),
-            adapter.Emu(child_box["w"]), adapter.Emu(child_box["h"]))
+            adapter.Emu(child_box["x"]),
+            adapter.Emu(child_box["y"]),
+            adapter.Emu(child_box["w"]),
+            adapter.Emu(child_box["h"]),
+        )
         tf = sub.text_frame
         tf.word_wrap = True
         first = True
@@ -1255,28 +1579,35 @@ def _emit_group_child(group: Any, child: Any, resolved: dict[str, Any],
                 r = p.add_run()
                 r.text = str(getattr(run, "text", ""))
             if getattr(para, "id", ""):
-                context.output_map.append(OutputSubBinding(
-                    source_atom_id=para.id,
-                    target_address=_address_of(slide, anchor, "group"),
-                    target_subaddress=f"group-child[{pos}]/para[{pidx}]",
-                    origin="exporter",
-                    evidence=[f"obj:{getattr(child, 'id', '')}"],
-                ))
+                context.output_map.append(
+                    OutputSubBinding(
+                        source_atom_id=para.id,
+                        target_address=_address_of(slide, anchor, "group"),
+                        target_subaddress=f"group-child[{pos}]/para[{pidx}]",
+                        origin="exporter",
+                        evidence=[f"obj:{getattr(child, 'id', '')}"],
+                    )
+                )
     elif kind == "group":
         nested = group.shapes.add_group_shape()
         for gidx, grand in enumerate(list(getattr(payload, "children", []) or [])):
-            _emit_group_child(nested, grand, resolved, slide, context,
-                              rules=rules, source_object_id=source_object_id,
-                              position=(*position, gidx),
-                              root_group=anchor)
+            _emit_group_child(
+                nested,
+                grand,
+                resolved,
+                slide,
+                context,
+                rules=rules,
+                source_object_id=source_object_id,
+                position=(*position, gidx),
+                root_group=anchor,
+            )
         _write_group_xfrm(nested, payload, resolved)
     else:
-        context.issues.append(
-            f"group child kind {kind} needs_review")
+        context.issues.append(f"group child kind {kind} needs_review")
 
 
-def _write_group_xfrm(group_shape: Any, payload: Any,
-                      resolved: dict[str, Any]) -> None:
+def _write_group_xfrm(group_shape: Any, payload: Any, resolved: dict[str, Any]) -> None:
     """Serialize the group-space transform (off/ext/child/rot/flip).
 
     Children are emitted in group-local coordinates; without the source
@@ -1331,9 +1662,12 @@ def _write_group_xfrm(group_shape: Any, payload: Any,
 def _child_box(child: Any, resolved: dict[str, Any]) -> dict[str, int]:
     box = getattr(getattr(child, "local_box", None), "__dict__", {}) or {}
     base = resolved.get("box_emu") or {"x": 914400, "y": 914400}
-    return {"x": int(box.get("x", base.get("x", 914400))),
-            "y": int(box.get("y", base.get("y", 914400))),
-            "w": int(box.get("w", 1828800)), "h": int(box.get("h", 914400))}
+    return {
+        "x": int(box.get("x", base.get("x", 914400))),
+        "y": int(box.get("y", base.get("y", 914400))),
+        "w": int(box.get("w", 1828800)),
+        "h": int(box.get("h", 914400)),
+    }
 
 
 def _child_text(child: Any) -> str:
@@ -1359,13 +1693,13 @@ def emit_image(
     if not digest or context.asset_store is None:
         raise ValueError("image payload has no retrievable asset bytes")
     from .assets import _extension_for, resolve_asset_bytes
+
     # Stage6 brand repair: an explicit run-level asset override swaps one
     # source object's bytes for an approved variant (same mark, visible
     # colorway) with old/new hashes recorded. Never a silent substitution:
     # the override entry must match the payload digest, replacement bytes
     # are hash-verified, and the swap is ledgered in context issues.
-    override = (getattr(context, "asset_overrides", {}) or {}).get(
-        source_object_id)
+    override = (getattr(context, "asset_overrides", {}) or {}).get(source_object_id)
     override_blob: bytes | None = None
     override_media = ""
     if override is not None:
@@ -1374,25 +1708,29 @@ def emit_image(
         if str(override.get("old_sha256", "")) != digest:
             raise ValueError(
                 f"ASSET_OVERRIDE_MISMATCH: {source_object_id}: override "
-                "old_sha256 does not match payload asset; refusing swap")
+                "old_sha256 does not match payload asset; refusing swap"
+            )
         store = context.asset_store
         base = getattr(getattr(store, "root", None), "__str__", lambda: "")()
         cand = Path(base) / str(override.get("replacement_relpath", ""))
         if not cand.is_file():
             raise ValueError(
                 f"REQUIRED_ASSET_UNRESOLVED: {source_object_id}: override "
-                f"replacement bytes missing: {cand}")
+                f"replacement bytes missing: {cand}"
+            )
         override_blob = cand.read_bytes()
         actual = _hashlib.sha256(override_blob).hexdigest()
         if actual != str(override.get("new_sha256", "")):
             raise ValueError(
                 f"ASSET_OVERRIDE_MISMATCH: {source_object_id}: replacement "
-                "bytes fail new_sha256 verification; refusing swap")
+                "bytes fail new_sha256 verification; refusing swap"
+            )
         override_media = str(override.get("media_type", "image/png"))
         context.issues.append(
             f"ASSET_OVERRIDE_APPLIED: {source_object_id} "
             f"{digest[:16]} -> {actual[:16]} "
-            f"({override.get('reason', '')})")
+            f"({override.get('reason', '')})"
+        )
     tctx = getattr(context, "transplant_context", None)
     try:
         resolved_asset = resolve_asset_bytes(
@@ -1402,15 +1740,15 @@ def emit_image(
             source_content_types=dict(getattr(tctx, "source_content_types", {}) or {}) or None,
         )
     except Exception as exc:
-        raise ValueError(
-            f"REQUIRED_ASSET_UNRESOLVED: {source_object_id}: {exc}") from exc
+        raise ValueError(f"REQUIRED_ASSET_UNRESOLVED: {source_object_id}: {exc}") from exc
     blob = override_blob if override_blob is not None else resolved_asset.data
     if override_blob is not None:
         suffix = _extension_for(override_media or "image/png")
     elif resolved_asset.source_kind == "source_opc":
         context.issues.append(
             f"ASSET_RECOVERED_FROM_SOURCE_OPC: {source_object_id} "
-            f"{resolved_asset.provenance} sha={digest[:16]}")
+            f"{resolved_asset.provenance} sha={digest[:16]}"
+        )
         suffix = _extension_for(resolved_asset.media_type or "image/png")
     else:
         suffix = _extension_for(resolved_asset.media_type or "image/png")
@@ -1425,19 +1763,28 @@ def emit_image(
     tmp.write_bytes(blob)
     box = resolved.get("box_emu") or {}
     pic = adapter.add_picture(
-        slide, tmp, int(box.get("x", 914400)), int(box.get("y", 914400)),
-        int(box.get("w", 2743200)), int(box.get("h", 1828800)))
+        slide,
+        tmp,
+        int(box.get("x", 914400)),
+        int(box.get("y", 914400)),
+        int(box.get("w", 2743200)),
+        int(box.get("h", 1828800)),
+    )
     address = _address_of(slide, pic, "image")
-    context.output_map.append(OutputSubBinding(
-        source_atom_id=f"{source_object_id}#asset",
-        target_address=address,
-        target_subaddress="picture",
-        origin="exporter",
-        evidence=[f"obj:{source_object_id}"],
-    ))
-    context.emission_records.append(EmissionRecord(
-        source_object_id=source_object_id, strategy="native_rebuild",
-        address=address))
+    context.output_map.append(
+        OutputSubBinding(
+            source_atom_id=f"{source_object_id}#asset",
+            target_address=address,
+            target_subaddress="picture",
+            origin="exporter",
+            evidence=[f"obj:{source_object_id}"],
+        )
+    )
+    context.emission_records.append(
+        EmissionRecord(
+            source_object_id=source_object_id, strategy="native_rebuild", address=address
+        )
+    )
     return address
 
 
@@ -1449,18 +1796,25 @@ def emit_free_connector(
     *,
     rules: Any = None,
     source_object_id: str = "",
+    visual_plan: Any = None,
 ) -> OutputShapeAddress:
     """Emit an endpoint-less connector as a native straight line.
 
     No relation exists to preserve; the visible geometry is kept and the
     diagram_node atom bound (an edge atom could never be verified here).
-    Connector line styling has no source-face binding yet and stays
-    default — recorded, not silently claimed.
+    The normative stroke comes from the zone token first, then the
+    pre-decided visual normalization plan (§6.2); without either the line
+    keeps its default — recorded, not silently claimed and never cleared
+    into invisibility for a required diagram.
     """
     box = resolved.get("box_emu") or {}
     conn = adapter.add_straight_connector(
-        slide, int(box.get("x", 914400)), int(box.get("y", 914400)),
-        int(box.get("w", 1828800)), int(box.get("h", 0)))
+        slide,
+        int(box.get("x", 914400)),
+        int(box.get("y", 914400)),
+        int(box.get("w", 1828800)),
+        int(box.get("h", 0)),
+    )
     adapter.strip_shape_effect_inheritance(conn)
     # A bound arrow is a required relation (§6.2.4): its direction is
     # semantic, so the arrowhead is preserved. Colour comes only from a
@@ -1471,36 +1825,50 @@ def emit_free_connector(
     if begin != "none" or end != "none":
         _set_connector_arrows(conn, begin, end, source_object_id, context)
     stroke = str(resolved.get("stroke_token", "") or "")
+    if not stroke and visual_plan is not None:
+        stroke = str(getattr(visual_plan, "stroke_token", "") or "")
+        if stroke:
+            context.issues.append(
+                f"STROKE_APPLIED: {source_object_id} plan stroke token "
+                f"{stroke!r} (zone declared none)"
+            )
     if stroke:
         rgb = _resolve_token_rgb(stroke, rules) if rules is not None else None
         if rgb:
             from pptx.dml.color import RGBColor
+
             conn.line.color.rgb = RGBColor.from_string(rgb)
             width = getattr(line, "width_emu", None) if line else None
             if width:
                 from pptx.util import Emu
+
                 conn.line.width = Emu(int(width))
             context.issues.append(
-                f"STROKE_APPLIED: {source_object_id} stroke token "
-                f"{stroke!r} -> #{rgb}")
+                f"STROKE_APPLIED: {source_object_id} stroke token {stroke!r} -> #{rgb}"
+            )
         else:
             context.issues.append(
                 f"SURFACE_TOKEN_UNKNOWN: {source_object_id} stroke token "
-                f"{stroke!r} not in the loaded palette")
+                f"{stroke!r} not in the loaded palette"
+            )
     address = _address_of(slide, conn, "connector")
-    context.emission_records.append(EmissionRecord(
-        source_object_id=source_object_id, strategy="native_rebuild",
-        address=address))
-    _bind_atom(context, slide, conn, source_object_id,
-               f"{source_object_id}#shape", "geometry", "relocate")
+    context.emission_records.append(
+        EmissionRecord(
+            source_object_id=source_object_id, strategy="native_rebuild", address=address
+        )
+    )
+    _bind_atom(
+        context, slide, conn, source_object_id, f"{source_object_id}#shape", "geometry", "relocate"
+    )
     return address
 
 
-
-def _set_connector_arrows(conn: Any, begin: str, end: str,
-                          source_object_id: str, context: Any) -> None:
+def _set_connector_arrows(
+    conn: Any, begin: str, end: str, source_object_id: str, context: Any
+) -> None:
     """Restore semantic arrowheads on a bound relation connector."""
     from pptx.oxml.ns import qn
+
     ln = conn.line._get_or_add_ln()
     for tag, value in (("a:headEnd", begin), ("a:tailEnd", end)):
         if value in ("", "none"):
@@ -1510,8 +1878,7 @@ def _set_connector_arrows(conn: Any, begin: str, end: str,
             existing = ln.makeelement(qn(tag), {})
             ln.append(existing)
         existing.set("type", value if value != "none" else "none")
-    context.issues.append(
-        f"ARROWHEAD_PRESERVED: {source_object_id} begin={begin} end={end}")
+    context.issues.append(f"ARROWHEAD_PRESERVED: {source_object_id} begin={begin} end={end}")
 
 
 def emit_connectors(
@@ -1523,6 +1890,7 @@ def emit_connectors(
     """Emit deferred connectors after all node shapes exist."""
     from pptx.enum.shapes import MSO_CONNECTOR
     from pptx.oxml.ns import qn
+
     id_map = id_map or {}
     out: list[OutputShapeAddress] = []
     for edge in graph:
@@ -1530,11 +1898,16 @@ def emit_connectors(
         dst = id_map.get(str(edge.get("to", "")), 0)
         if not src or not dst:
             context.issues.append(
-                f"connector endpoint unresolved: {edge.get('from')}->{edge.get('to')}")
+                f"connector endpoint unresolved: {edge.get('from')}->{edge.get('to')}"
+            )
             continue
         conn = slide.shapes.add_connector(
-            MSO_CONNECTOR.STRAIGHT, adapter.Emu(0), adapter.Emu(0),
-            adapter.Emu(914400), adapter.Emu(914400))
+            MSO_CONNECTOR.STRAIGHT,
+            adapter.Emu(0),
+            adapter.Emu(0),
+            adapter.Emu(914400),
+            adapter.Emu(914400),
+        )
         with contextlib.suppress(Exception):
             conn.line.fill.background()
         # Native connection sites (not a floating stub): the edge keeps its
@@ -1544,8 +1917,10 @@ def emit_connectors(
             cNvCxnSpPr = cxn.find(qn("p:cNvCxnSpPr"))
             if cNvCxnSpPr is None:
                 cNvCxnSpPr = etree.SubElement(cxn, qn("p:cNvCxnSpPr"))
-            for tag, sid, site in (("a:stCxn", src, edge.get("from_site")),
-                                   ("a:endCxn", dst, edge.get("to_site"))):
+            for tag, sid, site in (
+                ("a:stCxn", src, edge.get("from_site")),
+                ("a:endCxn", dst, edge.get("to_site")),
+            ):
                 el = cNvCxnSpPr.find(qn(tag))
                 if el is None:
                     el = etree.SubElement(cNvCxnSpPr, qn(tag))
@@ -1554,15 +1929,15 @@ def emit_connectors(
                     el.set("idx", str(site))
         address = _address_of(slide, conn, "connector")
         if edge.get("object_id"):
-            context.output_map.append(OutputSubBinding(
-                source_atom_id=f"{edge['object_id']}#edge",
-                target_address=address,
-                target_subaddress=(
-                    f"edge[{edge.get('from', '')}->{edge.get('to', '')}]"),
-                origin="exporter",
-                evidence=[f"obj:{edge['object_id']}",
-                          f"from_shape:{src}", f"to_shape:{dst}"],
-            ))
+            context.output_map.append(
+                OutputSubBinding(
+                    source_atom_id=f"{edge['object_id']}#edge",
+                    target_address=address,
+                    target_subaddress=(f"edge[{edge.get('from', '')}->{edge.get('to', '')}]"),
+                    origin="exporter",
+                    evidence=[f"obj:{edge['object_id']}", f"from_shape:{src}", f"to_shape:{dst}"],
+                )
+            )
         out.append(address)
     return out
 
@@ -1593,11 +1968,12 @@ def emit_unknown(
                     if el.tag.endswith("}cNvPr") and el.get("id") == str(shape_id):
                         parent = el.getparent()
                         while parent is not None and not (
-                                parent.tag.endswith("}sp")
-                                or parent.tag.endswith("}cxnSp")
-                                or parent.tag.endswith("}graphicFrame")
-                                or parent.tag.endswith("}grpSp")
-                                or parent.tag.endswith("}pic")):
+                            parent.tag.endswith("}sp")
+                            or parent.tag.endswith("}cxnSp")
+                            or parent.tag.endswith("}graphicFrame")
+                            or parent.tag.endswith("}grpSp")
+                            or parent.tag.endswith("}pic")
+                        ):
                             parent = parent.getparent()
                         if parent is not None:
                             new_el = deepcopy(parent)
@@ -1611,23 +1987,25 @@ def emit_unknown(
             except Exception as exc:  # noqa: BLE001 - opaque carry is best-effort
                 context.issues.append(f"opaque carry failed {source_object_id}: {exc}")
     if not carried:
-        context.issues.append(
-            f"opaque object {source_object_id} not carried: needs_review")
+        context.issues.append(f"opaque object {source_object_id} not carried: needs_review")
     try:
         address = _address_of(slide, list(slide.shapes)[-1], "unknown")
     except IndexError:
-        address = OutputShapeAddress(slide_part="", shape_id=0,
-                                     group_path=[], kind="unknown")
-    context.output_map.append(OutputSubBinding(
-        source_atom_id=f"{source_object_id}#raw",
-        target_address=address,
-        target_subaddress="opaque",
-        origin="exporter",
-        evidence=[f"obj:{source_object_id}"],
-    ))
-    context.emission_records.append(EmissionRecord(
-        source_object_id=source_object_id, strategy="opaque_transplant",
-        address=address))
+        address = OutputShapeAddress(slide_part="", shape_id=0, group_path=[], kind="unknown")
+    context.output_map.append(
+        OutputSubBinding(
+            source_atom_id=f"{source_object_id}#raw",
+            target_address=address,
+            target_subaddress="opaque",
+            origin="exporter",
+            evidence=[f"obj:{source_object_id}"],
+        )
+    )
+    context.emission_records.append(
+        EmissionRecord(
+            source_object_id=source_object_id, strategy="opaque_transplant", address=address
+        )
+    )
     return address
 
 
@@ -1644,6 +2022,7 @@ def _fresh_output_shape_id(slide: Any) -> int:
 # ---------------------------------------------------------------------------
 # §10 notes, links, slide emission
 # ---------------------------------------------------------------------------
+
 
 def _notes_text_placeholder(notes_slide: Any) -> Any | None:
     """Locate the notes body placeholder (type body/idx 1) on a notes slide."""
@@ -1703,9 +2082,12 @@ def _apply_notes_run_style(rpr: Any, style: Any) -> None:
         rpr.set("lang", language)
 
 
-def copy_notes(source_notes: list[Any], output_slide: Any,
-               context: NativeDeckContext,
-               source_slide_id: str = "") -> dict[str, Any]:
+def copy_notes(
+    source_notes: list[Any],
+    output_slide: Any,
+    context: NativeDeckContext,
+    source_slide_id: str = "",
+) -> dict[str, Any]:
     """Copy notes paragraphs 1:1 into the output notes slide.
 
     Each source paragraph maps to exactly one output paragraph; soft breaks
@@ -1749,18 +2131,18 @@ def copy_notes(source_notes: list[Any], output_slide: Any,
             t.text = getattr(run, "text", "") or ""
         if getattr(para, "id", ""):
             try:
-                address = _address_of(output_slide,
-                                      list(output_slide.shapes)[0], "notes")
+                address = _address_of(output_slide, list(output_slide.shapes)[0], "notes")
             except IndexError:
-                address = OutputShapeAddress(
-                    slide_part="", shape_id=0, group_path=[], kind="notes")
-            context.output_map.append(OutputSubBinding(
-                source_atom_id=f"{source_slide_id}/{para.id}",
-                target_address=address,
-                target_subaddress=f"notes-para[{para.id}]",
-                origin="exporter",
-                evidence=[f"slide:{source_slide_id}"],
-            ))
+                address = OutputShapeAddress(slide_part="", shape_id=0, group_path=[], kind="notes")
+            context.output_map.append(
+                OutputSubBinding(
+                    source_atom_id=f"{source_slide_id}/{para.id}",
+                    target_address=address,
+                    target_subaddress=f"notes-para[{para.id}]",
+                    origin="exporter",
+                    evidence=[f"slide:{source_slide_id}"],
+                )
+            )
     return {"ok": True, "paragraphs": len(source_notes or [])}
 
 
@@ -1780,12 +2162,10 @@ def remap_hyperlinks(context: NativeDeckContext) -> dict[str, Any]:
         elif kind == "internal":
             # target_ref is a source part path here (run-level IR granularity);
             # resolve through source positions, wired in final assembly.
-            pos = context.source_part_positions.get(
-                str(item.get("target_ref", "")))
+            pos = context.source_part_positions.get(str(item.get("target_ref", "")))
             if pos is None:
                 # Fall back to the slide-id map (link-resolution granularity).
-                target = context.source_to_output_slide_map.get(
-                    str(item.get("target_ref", "")))
+                target = context.source_to_output_slide_map.get(str(item.get("target_ref", "")))
                 if target:
                     item["target_part"] = target
                     resolved_count += 1
