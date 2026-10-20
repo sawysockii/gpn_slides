@@ -374,6 +374,29 @@ def test_authorized_asset_replacement_passes_unauthorized_fails() -> None:
     assert not diff2.ok and diff2.changed
 
 
+def test_absent_valueless_atom_is_not_lost_content_but_text_is() -> None:
+    """Omitted decor leaves empty paragraphs; blanks are not content (C05)."""
+    from slides_cli.gpn.export_pipeline import compare_export_preservation
+
+    class _Atom:
+        def __init__(self, aid, value):
+            self.id = aid
+            self.kind = "text"
+            self.canonical_value = value
+            self.transform = "identity"
+
+    class _Ledger:
+        atoms = [_Atom("empty#p0", ""), _Atom("real#p0", "Текст")]
+
+    class _IR:
+        slides = []
+
+    diff = compare_export_preservation(_Ledger(), _IR(), [], {})
+    assert "empty#p0" in diff.omitted_authorized
+    assert "real#p0" in diff.missing
+    assert not diff.ok
+
+
 # ---------------------------------------------------------------------------
 # §10#16/#17: central aggregation blocks and accepts
 # ---------------------------------------------------------------------------

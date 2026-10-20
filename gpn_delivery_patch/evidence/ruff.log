@@ -1,4 +1,0 @@
-Command: ['/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3', '-m', 'ruff', 'check', '--config', 'lint.isort.known-first-party=["slides_cli"]', 'src', 'tests', 'tools/harness_batch.py', 'harness/model_loop.py']
-All checks passed!
-
-exit_code=0

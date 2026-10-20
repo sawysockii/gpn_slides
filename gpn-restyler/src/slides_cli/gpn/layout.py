@@ -446,6 +446,19 @@ def _stroke_widths_pt(tree: Any) -> dict[str, float]:
     }
 
 
+def _solver_budget(options: dict[str, Any], node_count: int) -> float:
+    """Wall-clock CP-SAT budget that scales with the measured model size.
+
+    Pairwise disjunctions grow quadratically with the number of placed
+    components, so a fixed few-second budget returns OPTIMAL/UNKNOWN by
+    timeout on dense slides. An explicit ``solver_seconds`` still wins.
+    """
+    explicit = options.get("solver_seconds")
+    if explicit is not None:
+        return float(explicit)
+    return max(5.0, min(60.0, 0.5 * float(node_count)))
+
+
 def _resolve_hint_overlaps(
     boxes: dict[str, dict[str, float]],
     order: list[str],
@@ -465,6 +478,7 @@ def _resolve_hint_overlaps(
         movable=[cid for cid in order if cid not in (obstacles or {})],
         allowed_pairs=allowed,
         container_ids={cid for cid, kind in (node_kinds or {}).items() if kind == "shape"},
+        seconds=_solver_budget({}, len(full)),
     )
     move = {"action": "constraint_layout", **result.stats}
     if result.boxes:
@@ -1559,7 +1573,7 @@ def resolve_layout(
             source_bindings={
                 ref: cid for cid, node in tree.components.items() for ref in node.content_refs
             },
-            seconds=float(options.get("solver_seconds", 5.0)),
+            seconds=_solver_budget(options, len(components)),
         )
     except (ValueError, RuntimeError, ImportError) as exc:
         return LayoutResolutionResult(
@@ -1752,7 +1766,7 @@ def resolve_layout(
                 source_bindings={
                     ref: cid for cid, node in tree.components.items() for ref in node.content_refs
                 },
-                seconds=float(options.get("solver_seconds", 5.0)),
+                seconds=_solver_budget(options, len(components)),
             )
             for counter in (tracker, options.get("runtime_counters")):
                 if isinstance(counter, dict):

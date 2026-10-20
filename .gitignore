@@ -13,3 +13,12 @@ runs/
 
 # Входные/выходные деки в корне — пользовательский контент, не в публичный git
 /*.pptx
+
+# Локальные отчёты и снапшоты восстановления — только на диске
+/reports/
+/manifest.json
+/RESTORE.md
+
+# Артефакты приёма внешнего патча: бэкапы и lock — машинные, не в git
+gpn-restyler/.delivery_patch.lock
+gpn-restyler/.delivery_patch_backups/

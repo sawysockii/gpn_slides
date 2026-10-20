@@ -66,17 +66,47 @@ def _resume_if_unchanged(
     }
 
 
-def _image_natural_pt(run_dir: Path, slides: list[Any]) -> dict[str, dict[str, float]]:
-    """Natural image sizes in Pt from run asset bytes (§10.2).
+def _source_package_parts(source_path: str) -> tuple[dict[str, bytes], dict[str, str]]:
+    """Owner-package bytes for asset recovery, or empty when unavailable."""
+    if not source_path:
+        return {}, {}
+    try:
+        from .transplant import load_source_package
 
-    Aspect preservation needs the true media size, never a guessed box.
-    Unreadable assets are reported by omission (the resolver flags them).
+        parts, content_types, _outgoing, _hash = load_source_package(source_path)
+        return parts, content_types
+    except Exception:  # noqa: BLE001 - recovery omission flags the gap
+        return {}, {}
+
+
+def _image_natural_pt(
+    run_dir: Path,
+    slides: list[Any],
+    *,
+    source_parts: dict[str, bytes] | None = None,
+    source_content_types: dict[str, str] | None = None,
+) -> dict[str, dict[str, float]]:
+    """Natural image sizes in Pt from verified asset bytes (§10.2).
+
+    Aspect preservation needs the true media size, never a guessed box. Bytes
+    absent from the run stores are recovered from the immutable source package
+    by the checked resolver (§5.1, hash-matched) and re-cached for reuse.
+    Truly unreadable assets are reported by omission (the resolver flags them).
     """
+    import io
+
     out: dict[str, dict[str, float]] = {}
     try:
         from PIL import Image as _Image
     except ImportError:
         return out
+    stores: list[Any] = []
+    try:
+        from .assets import AssetStore
+
+        stores.append(AssetStore(run_dir / "assets"))
+    except Exception:  # noqa: BLE001 - recovery omission flags the gap
+        pass
     for slide in slides:
         for obj in list(getattr(slide, "objects", []) or []):
             if getattr(obj, "kind", "") != "image":
@@ -84,16 +114,30 @@ def _image_natural_pt(run_dir: Path, slides: list[Any]) -> dict[str, dict[str, f
             payload = getattr(obj, "payload", None)
             asset = getattr(payload, "asset", None)
             rel = getattr(asset, "relative_path", "") if asset else ""
-            if not rel:
+            if not rel or asset is None:
                 continue
+            data: bytes | None = None
             for base in (run_dir / "assets", run_dir / "candidate_assets"):
                 candidate = base / rel
                 if candidate.is_file():
+                    data = candidate.read_bytes()
                     break
-            else:
+            if data is None:
+                try:
+                    from .assets import resolve_asset_bytes
+
+                    data = resolve_asset_bytes(
+                        asset,
+                        stores=stores,
+                        source_parts=source_parts,
+                        source_content_types=source_content_types,
+                    ).data
+                except Exception:  # noqa: BLE001 - omission flags the gap
+                    data = None
+            if not data:
                 continue
             try:
-                with _Image.open(candidate) as im:
+                with _Image.open(io.BytesIO(data)) as im:
                     w_px, h_px = im.size
                 dpi = 96.0
                 out[str(getattr(obj, "id", ""))] = {"w": w_px * 72.0 / dpi, "h": h_px * 72.0 / dpi}
@@ -295,6 +339,14 @@ def _run_measured_build(
         # expected set would be no proof; a huge unbound one is not a
         # failure either).
         ledger, verification_scope = scope_ledger_for_pilot(deck, ledger, scope_selection, run_dir)
+    has_images = any(
+        getattr(obj, "kind", "") == "image"
+        for slide in slides
+        for obj in (getattr(slide, "objects", []) or [])
+    )
+    source_parts, source_content_types = ({}, {})
+    if has_images:
+        source_parts, source_content_types = _source_package_parts(source_path)
     resolved: list[ResolvedSlide] = []
     resolved_trees: list[Any] = []
     trees_by_candidate: dict[tuple[str, str], Any] = {}
@@ -394,7 +446,12 @@ def _run_measured_build(
                     "budget_tracker": tracker,
                     "runtime_counters": layout_options.get("runtime_counters"),
                     "debug_output_dir": str(run_dir / "measurement" / "debug"),
-                    "image_natural_pt": _image_natural_pt(run_dir, [slide]),
+                    "image_natural_pt": _image_natural_pt(
+                        run_dir,
+                        [slide],
+                        source_parts=source_parts,
+                        source_content_types=source_content_types,
+                    ),
                 },
             )
             safe_id = slide.id.replace("/", "_")
@@ -504,7 +561,13 @@ def _run_measured_build(
 
         content_box_pt, _ = _content_box_pt(profile, rules)
         _write_saved_checks(
-            run_dir, resolved, result, layout_options, measurer, content_box_pt, resolved_trees
+            run_dir,
+            resolved,
+            result,
+            {**layout_options, "visibility_selected_slide_ids": scope_selection},
+            measurer,
+            content_box_pt,
+            resolved_trees,
         )
         if layout_options.get("render"):
             _run_native_render(run_dir, result, resolved, rules, inventory, layout_options)
@@ -770,7 +833,13 @@ def _write_saved_checks(
     # Scope honesty: this checker proves canvas containment + presence;
     # text fit is proven by saved_measurement_report, occlusions by the
     # layout gates + visual review (cross-referenced, not claimed here).
-    visibility_report = check_required_visibility_for_run(run_dir, after_deck)
+    visibility_report = check_required_visibility_for_run(
+        run_dir,
+        after_deck,
+        selected_slide_ids=layout_options.get(
+            "visibility_selected_slide_ids", layout_options.get("selected_slide_ids")
+        ),
+    )
     atomic_write_json(run_dir / "required_visibility_report.json", visibility_report)
     artifacts = dict(getattr(result, "artifacts", {}) or {})
     artifacts["required_visibility_report"] = str(run_dir / "required_visibility_report.json")
@@ -823,144 +892,13 @@ def _emu_to_pt(value: int) -> float:
     return emu_to_pt(int(value))
 
 
-def check_required_visibility_for_run(run_dir: Path, after_deck: Any) -> dict[str, Any]:
-    """Wire the expected-first visibility checker into the run tail.
+def check_required_visibility_for_run(
+    run_dir: Path, after_deck: Any, *, selected_slide_ids: list[str] | None = None
+) -> dict[str, Any]:
+    """Presence/canvas scope from source atoms and exact saved bindings."""
+    from .visibility_scope import check_run_visibility
 
-    Expected required set: source objects carrying required ledger atoms
-    (source projection). Mapping to after-deck ids goes through emission
-    binding evidence (address part/shape_id), never source==after id
-    equality. Unknown/missing required units block; an empty required
-    set is unknown, never a pass.
-    """
-    from .geometry import check_required_content_visibility
-
-    empty: dict[str, Any] = {
-        "per_object": {},
-        "missing": [],
-        "unknown_required": [],
-        "outside_proofs": [],
-        "result": "unknown",
-        "scope": "canvas_containment_and_presence_only; text fit is "
-        "proven by saved_measurement_report, occlusions by the "
-        "layout gates and visual review",
-    }
-    try:
-        ledger_doc = json.loads((run_dir / "source_ledger.json").read_text(encoding="utf-8"))
-        emission_doc = json.loads((run_dir / "emission_report.json").read_text(encoding="utf-8"))
-        saved_geometry = json.loads(
-            (run_dir / "saved_geometry_report.json").read_text(encoding="utf-8")
-        )
-    except (OSError, json.JSONDecodeError) as exc:
-        return {**empty, "result": "unknown", "reason": f"run inputs unreadable: {exc}"}
-    required_parts: set[tuple[str, int]] = set()
-    notes_atoms = 0
-    for atom in ledger_doc.get("atoms", []) or []:
-        if not atom.get("required"):
-            continue
-        if atom.get("kind") == "notes":
-            # Slide notes are not canvas objects: their preservation is
-            # proven by content_diff notes-para bindings, never by this
-            # geometry gate. Counted explicitly, never silently dropped.
-            notes_atoms += 1
-            continue
-        ref = atom.get("source_ref", {}) or {}
-        try:
-            required_parts.add((str(ref.get("slide_part", "")), int(ref.get("shape_id", -1))))
-        except (TypeError, ValueError):
-            continue
-    # Shape ids are UNSTABLE across packages: map through emission
-    # records (source object -> saved address -> after object), never by
-    # source shape_id == after shape_id equality.
-    source_loc = _source_part_to_object(run_dir)
-    emit_addr: dict[str, tuple[str, int]] = {}
-    for rec in emission_doc.get("records", []) or []:
-        addr = rec.get("address", {}) or {}
-        try:
-            emit_addr[str(rec.get("source_object_id", "") or "")] = (
-                str(addr.get("slide_part", "")),
-                int(addr.get("shape_id", -1)),
-            )
-        except (TypeError, ValueError):
-            continue
-    after_by_addr: dict[tuple[str, int], str] = {}
-    for slide in list(getattr(after_deck, "slides", []) or []):
-        part = getattr(slide, "slide_part", "") or ""
-        for obj in list(getattr(slide, "objects", []) or []):
-            ref = getattr(obj, "source_ref", None)
-            try:
-                after_by_addr[(part, int(getattr(ref, "shape_id", -1)))] = str(
-                    getattr(obj, "id", "")
-                )
-            except (TypeError, ValueError):
-                continue
-    authorized_omit_objs: set[str] = set()
-    class_doc = _read_json_lenient(run_dir / "classification_and_transformation_ledger.json")
-    for dec in class_doc.get("decisions", []) or []:
-        if not isinstance(dec, dict) or not dec.get("authorization_ref"):
-            continue
-        if dec.get("action") == "omit":
-            authorized_omit_objs.add(str(dec.get("source_object_id", "")))
-        elif dec.get("action") in ("recompose", "replace") and dec.get("target_relation_ids"):
-            # Arrow re-expressed as a native relation: excused from
-            # shape presence; preservation proven by the relations gate.
-            authorized_omit_objs.add(str(dec.get("source_object_id", "")))
-    required_after_ids: list[str] = []
-    mapped_parts: set[tuple[str, int]] = set()
-    omitted_authorized_parts: list[str] = []
-    truly_missing: list[str] = []
-    for key in sorted(required_parts):
-        oid = source_loc.get(key)
-        addr = emit_addr.get(oid or "")
-        after_id = after_by_addr.get(addr) if addr else None
-        if after_id:
-            required_after_ids.append(after_id)
-            mapped_parts.add(key)
-            continue
-        # No saved object serves this required part: authorized omit or
-        # missing/fail — never a silent pass.
-        if oid in authorized_omit_objs:
-            omitted_authorized_parts.append(f"{key[0]}#{key[1]}")
-        else:
-            truly_missing.append(f"{key[0]}#{key[1]}:{(oid or '?')[:8]}")
-    if truly_missing:
-        return {
-            "per_object": {},
-            "missing": truly_missing[:10],
-            "unknown_required": [],
-            "outside_proofs": [],
-            "result": "fail",
-            "reason": "required source parts absent from package",
-            "scope": "canvas_containment_and_presence_only",
-            "required_source_parts": len(required_parts),
-            "required_after_ids": len(required_after_ids),
-            "omitted_authorized_parts": sorted(omitted_authorized_parts),
-        }
-    if not required_after_ids and required_parts:
-        return {
-            "per_object": {},
-            "missing": [],
-            "unknown_required": [],
-            "outside_proofs": [],
-            "result": "fail",
-            "reason": "no required source part maps to a saved object",
-            "scope": "canvas_containment_and_presence_only",
-            "required_source_parts": len(required_parts),
-            "required_after_ids": 0,
-            "omitted_authorized_parts": sorted(omitted_authorized_parts),
-        }
-    report = check_required_content_visibility(
-        after_deck, saved_geometry, required_refs=required_after_ids
-    )
-    report["notes_atoms_checked_elsewhere"] = notes_atoms
-    report["scope"] = (
-        "canvas_containment_and_presence_only; text fit is proven by "
-        "saved_measurement_report, occlusions by the layout gates and "
-        "visual review"
-    )
-    report["required_source_parts"] = len(required_parts)
-    report["required_after_ids"] = len(required_after_ids)
-    report["omitted_authorized_parts"] = sorted(omitted_authorized_parts)
-    return report
+    return check_run_visibility(run_dir, after_deck, selected_slide_ids=selected_slide_ids)
 
 
 def _read_json_lenient(path: Path) -> dict[str, Any]:

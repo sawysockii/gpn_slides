@@ -96,9 +96,43 @@ def _queue(batch: Path) -> tuple[list[dict], list[dict]]:
     return candidates, problems
 
 
+def _refresh_stale_reviews(batch: Path) -> None:
+    """Pending reviews must describe current pixels, not a prior render env.
+
+    ``next`` used to serve a queued review packet even after the renderer or
+    font environment changed. Refresh deterministic renders first; stale
+    pending reviews are marked superseded and regenerated on the next stage
+    tick instead of being answered against an obsolete PNG.
+    """
+    from slides_cli.gpn.restyle_runner import (
+        RunState,
+        _render_all_candidates,
+        save_state,
+    )
+
+    review_kinds = ("visual_review", "design_review")
+    for run in discover_runs(batch):
+        path = run / "run_state.json"
+        if not path.is_file():
+            continue
+        raw = read(path)
+        if raw.get("stage") == "accepted":
+            continue
+        if not any(
+            t.get("status") == "pending" and t.get("kind") in review_kinds
+            for t in raw.get("task_queue", [])
+        ):
+            continue
+        state = RunState.model_validate(raw)
+        changed = _render_all_candidates(state)
+        if changed or any(t.status == "superseded" for t in state.task_queue):
+            save_state(state)
+
+
 def next_work(batch: Path) -> dict:
     journal_path = batch / ".harness_dispatch.json"
     journal = read(journal_path) if journal_path.is_file() else {"sequence": 0, "served": {}}
+    _refresh_stale_reviews(batch)
     candidates, problems = _queue(batch)
     active = journal.get("outstanding")
     chosen = next(
@@ -122,6 +156,17 @@ def next_work(batch: Path) -> dict:
             return (
                 0 if untouched else 1,
                 journal["served"].get(str(c["run"]), -1),
+                # Within a case, finish ready downstream work before asking
+                # for every brief in the deck. Across cases, fairness wins.
+                {
+                    "candidate_selection": 0,
+                    "design_review": 1,
+                    "visual_review": 2,
+                    "scene_repair": 3,
+                    "scene_generation": 4,
+                    "visual_concept_generation": 5,
+                    "design_brief": 6,
+                }.get(c["task"]["kind"], 7),
                 c["queue_index"],
                 str(c["run"]),
             )
@@ -141,6 +186,17 @@ def next_work(batch: Path) -> dict:
     for raw in task.get("required_images", []):
         p = Path(raw)
         images.append(str(p if p.is_absolute() else run / p))
+    # Old immutable scene packets used only slide-01.png, while pdftoppm
+    # emitted slide-1.png for NTC. Add current source context to the work
+    # order without changing the issued task, its ID, or its fingerprint.
+    sid = chosen["packet"].get("slide_id")
+    sid = sid or chosen["packet"].get("semantic_slide", {}).get("source_slide_id")
+    sid = sid or chosen["packet"].get("design_brief", {}).get("slide_id")
+    if sid:
+        from slides_cli.gpn.source_images import source_slide_images
+
+        images.extend(source_slide_images(run, sid))
+    images = list(dict.fromkeys(images))
     identity = {
         "run": str(run),
         "request_id": task["request_id"],
@@ -150,7 +206,27 @@ def next_work(batch: Path) -> dict:
     order_path = batch / "harness_work" / f"{order_id}.json"
     response_path = run / "model_responses" / f"{digest(task['request_id'])}.json"
     from slides_cli.gpn import models
+    from slides_cli.gpn.frame_contract import model_frame_context
     from slides_cli.gpn.planner import LayoutIntent
+
+    reference_context = {"references": [], "required_images": [], "issues": []}
+    if sid and task["kind"] in (
+        "design_brief",
+        "visual_concept_generation",
+        "scene_generation",
+        "scene_repair",
+    ):
+        from slides_cli.gpn.owned_examples import render_owned_examples, select_owned_examples
+
+        semantic = models.SemanticDeck.model_validate(read(run / "inputs/semantic_deck.json"))
+        slide = next(s for s in semantic.slides if s.source_slide_id == sid)
+        project = Path(chosen["state"]["input_spec"]["project_root"])
+        examples = select_owned_examples(project, slide)
+        if examples:
+            reference_context = render_owned_examples(
+                project, examples, font_inventory=run / "font_inventory.json"
+            )
+            images = list(dict.fromkeys(images + reference_context["required_images"]))
 
     schemas = {
         "semantic_analysis": models.SemanticDeck,
@@ -161,6 +237,17 @@ def next_work(batch: Path) -> dict:
         "candidate_selection": models.SelectionReport,
     }
     model = schemas.get(task["kind"])
+    if task["kind"] in ("scene_generation", "scene_repair", "visual_concept_generation"):
+        from pydantic import ConfigDict, create_model
+
+        # The payload is a wrapper, not a bare LayoutIntent/VisualConcept.
+        field = "concepts" if task["kind"] == "visual_concept_generation" else "scene_plan"
+        field_type = list[models.VisualConcept] if field == "concepts" else LayoutIntent
+        model = create_model(
+            "ConceptSetPayload" if field == "concepts" else "ScenePayload",
+            __config__=ConfigDict(extra="forbid"),
+            **{field: (field_type, ...)},
+        )
     work = {
         "status": "model_work_required",
         "product_complete": False,
@@ -172,8 +259,11 @@ def next_work(batch: Path) -> dict:
         "payload_schema": model.model_json_schema() if model else {},
         "required_images": images,
         "missing_images": [p for p in images if not Path(p).is_file()],
+        "source_slide_id": sid,
         "loaded_role_styles": rules.get("roles", {}),
         "loaded_colors": rules.get("colors", {}),
+        "layout_frame": model_frame_context(run),
+        "owned_reference_context": reference_context,
         "response_path": str(response_path),
         "response_envelope": {
             "schema_version": "model-task-response/v1",
@@ -207,6 +297,69 @@ def next_work(batch: Path) -> dict:
         "missing_images": work["missing_images"],
         "product_complete": False,
         "next_action": "Read work_order, author response, submit, next; do not end the task here.",
+    }
+
+
+def audit_progress(batch: Path) -> dict:
+    """Read-only counters: historical queue length is not spent model budget."""
+    from collections import Counter
+
+    cases = []
+    for run in discover_runs(batch):
+        state = read(run / "run_state.json")
+        tasks = state.get("task_queue", [])
+        pending = [t for t in tasks if t.get("status") == "pending"]
+        spent = state.get("tasks_used", 0)
+        limit = state.get("budget", {}).get("max_model_tasks", 0)
+        candidates = []
+        rendered = []
+        for job in state.get("deck_candidates", []):
+            raw = job.get("candidate.pptx")
+            path = run / raw if raw else None
+            if (
+                path
+                and path.is_file()
+                and hashlib.sha256(path.read_bytes()).hexdigest() == job.get("sha256")
+            ):
+                candidates.append(job["deck_key"])
+                manifest_path = run / str(job.get("render_manifest", "__missing__"))
+                if manifest_path.is_file():
+                    manifest = read(manifest_path)
+                    if (
+                        manifest.get("candidate_sha256") == job["sha256"]
+                        and manifest.get("pages")
+                        and all(
+                            (manifest_path.parent / p["image"]).is_file()
+                            and hashlib.sha256(
+                                (manifest_path.parent / p["image"]).read_bytes()
+                            ).hexdigest()
+                            == p["sha256"]
+                            for p in manifest["pages"]
+                        )
+                    ):
+                        rendered.append(job["deck_key"])
+        cases.append(
+            {
+                "run": str(run),
+                "stage": state["stage"],
+                "historical_tasks": len(tasks),
+                "task_statuses": dict(Counter(t.get("status") for t in tasks)),
+                "pending_by_kind": dict(Counter(t["kind"] for t in pending)),
+                "model_responses_consumed": spent,
+                "max_model_tasks": limit,
+                "pending_reservations": len(pending),
+                "unreserved_model_capacity": limit - spent - len(pending),
+                "budget_counts_rejected_history": False,
+                "counter_consistent": spent == len(state.get("consumed_request_ids", [])),
+                "native_candidates_on_disk": candidates,
+                "current_renders_on_disk": rendered,
+                "accepted_product": state.get("accepted_product"),
+            }
+        )
+    return {
+        "schema_version": "delivery-progress/v2",
+        "cases": cases,
+        "product_complete": batch_complete(batch),
     }
 
 
@@ -344,6 +497,7 @@ def bundle_review(batch: Path, repo: Path) -> dict:
             "model_rule_digest.md",
             "font_inventory.json",
             "template_profile.json",
+            "profiles/base_template.pptx",
             "classification_and_transformation_ledger.json",
             "part_preservation_diff.json",
             "saved_authoring_rule_report.json",
@@ -351,6 +505,7 @@ def bundle_review(batch: Path, repo: Path) -> dict:
             "saved_frame_report.json",
             "delivery_patch_activation.json",
             "candidate_attempts.json",
+            "legacy_deck_candidates.json",
             "comparison_coverage.json",
             "selection_report.json",
             "product_acceptance.json",
@@ -384,6 +539,9 @@ def bundle_review(batch: Path, repo: Path) -> dict:
             for path in run.glob(pattern):
                 files[f"cases/{case}/{path.relative_to(run)}"] = path
         state = read(run / "run_state.json")
+        source_input = Path(state.get("input_spec", {}).get("path") or "/__missing_input__")
+        if source_input.is_file():
+            files[f"cases/{case}/input/{source_input.name}"] = source_input
         product = state.get("accepted_product") or {}
         output = Path(product.get("output_path", "/__missing_product__"))
         if output.is_file():
@@ -391,18 +549,29 @@ def bundle_review(batch: Path, repo: Path) -> dict:
         elif (run / "candidate.pptx").is_file():
             files[f"cases/{case}/unaccepted_candidate.pptx"] = run / "candidate.pptx"
         failure_signatures = set()
+        successful_examples = 0
         for job in state.get("deck_candidates", []):
             if job.get("eligible"):
-                continue
-            signature = tuple(sorted(job.get("attempt", {}).get("finding_codes", [])))
-            if signature in failure_signatures:
-                continue
-            failure_signatures.add(signature)
+                # A gate archive must contain successful candidate bytes
+                # and PNGs as well as the rejected diagnostic examples.
+                if successful_examples >= 2:
+                    continue
+                successful_examples += 1
+            else:
+                signature = tuple(sorted(job.get("attempt", {}).get("finding_codes", [])))
+                if signature in failure_signatures:
+                    continue
+                failure_signatures.add(signature)
             folder = run / "scenes" / job["deck_key"]
             for pattern in (
                 "candidate.pptx",
                 "candidate_evaluations.json",
                 "runtime_counters.json",
+                "content_diff.json",
+                "part_preservation_diff.json",
+                "saved_*report.json",
+                "required_visibility_report.json",
+                "native_editability_report.json",
                 "render/*.png",
                 "render/*.pdf",
                 "render/*.json",
@@ -412,10 +581,23 @@ def bundle_review(batch: Path, repo: Path) -> dict:
                     if path.is_file():
                         files[f"cases/{case}/{path.relative_to(run)}"] = path
         for task in state.get("task_queue", []):
-            if task.get("status") == "pending":
+            if task.get("status") == "pending" or (
+                task.get("status") == "consumed"
+                and task.get("kind") in ("design_brief", "visual_concept_generation")
+            ):
                 path = packet_path(run, task)
                 if path.is_file():
-                    files[f"cases/{case}/{task['packet']}"] = path
+                    try:
+                        rel = path.resolve().relative_to(run.resolve())
+                    except ValueError as error:
+                        raise ValueError(f"REQUEST_PACKET_OUTSIDE_RUN:{path}") from error
+                    files[f"cases/{case}/{rel}"] = path
+    progress = batch / "delivery_progress.json"
+    write(progress, audit_progress(batch))
+    files["delivery_progress.json"] = progress
+    for name in ("delivery_batch_manifest.json", ".harness_dispatch.json"):
+        if (batch / name).is_file():
+            files[f"dispatcher/{name}"] = batch / name
     for path in (batch / "delivery_checks").rglob("*"):
         if path.is_file():
             files[f"checks/{path.relative_to(batch / 'delivery_checks')}"] = path
@@ -427,6 +609,9 @@ def bundle_review(batch: Path, repo: Path) -> dict:
         "scene_contract.py",
         "scene_jobs.py",
         "response_validation.py",
+        "design_frontier.py",
+        "source_images.py",
+        "owned_examples.py",
         "constraint_layout.py",
         "measured_placement.py",
         "candidate_jobs.py",
@@ -439,6 +624,8 @@ def bundle_review(batch: Path, repo: Path) -> dict:
         "layout.py",
         "measured_build.py",
         "native.py",
+        "export_pipeline.py",
+        "opc_adapter.py",
         "render.py",
         "models.py",
         "planner.py",
@@ -450,6 +637,21 @@ def bundle_review(batch: Path, repo: Path) -> dict:
         path = repo / name
         if path.is_file():
             files[f"code/{name}"] = path
+    for path in (repo / "tests/gpn").glob("test_delivery_*.py"):
+        files[f"code/tests/gpn/{path.name}"] = path
+    # The earlier partial snapshot omitted unchanged core API modules,
+    # making normal CLI imports impossible to reproduce outside the Mac.
+    for subdir in ("src/slides_cli", "tests/gpn"):
+        for path in (repo / subdir).rglob("*.py"):
+            files[f"code/full/{path.relative_to(repo)}"] = path
+    for name in (
+        "pyproject.toml",
+        "uv.lock",
+        "tools/layout/package.json",
+        "tools/layout/package-lock.json",
+    ):
+        if (repo / name).is_file():
+            files[f"code/full/{name}"] = repo / name
     output = batch / "delivery_review.zip"
     manifest = {
         "schema_version": "delivery-review/v1",
@@ -483,6 +685,7 @@ def main() -> int:
     commands.add_parser("finish")
     commands.add_parser("advance")
     commands.add_parser("bundle")
+    commands.add_parser("audit")
     register = commands.add_parser("register")
     register.add_argument("--expected-run", type=Path, action="append", required=True)
     activate = commands.add_parser("activate")
@@ -498,6 +701,8 @@ def main() -> int:
             fcntl.flock(lock, fcntl.LOCK_EX)
             if args.action == "next":
                 result = next_work(batch)
+            elif args.action == "audit":
+                result = audit_progress(batch)
             elif args.action == "submit":
                 result = submit(batch, args.response, args.repo_root.resolve())
             elif args.action == "register":

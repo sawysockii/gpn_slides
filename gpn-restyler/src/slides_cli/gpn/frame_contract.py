@@ -10,6 +10,38 @@ EMU_PER_INCH = 914400
 PT_PER_INCH = 72
 
 
+def model_frame_context(run_dir: Any) -> dict[str, Any]:
+    """Expose the exact engine coordinate contract to the authoring model."""
+    import hashlib
+    import json
+    from pathlib import Path
+
+    root = Path(run_dir)
+    rules_path = root / "compiled_rules.json"
+    profile_path = root / "template_profile.json"
+    if not rules_path.is_file() or not profile_path.is_file():
+        return {"verified": False, "issues": ["FRAME_CONTEXT_INPUT_MISSING"]}
+    rules = CompiledOntology.model_validate_json(rules_path.read_text(encoding="utf-8"))
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    box, verified, source, issues = _resolve_content_box(profile, rules)
+    return {
+        "verified": verified,
+        "source": source,
+        "issues": issues,
+        "canvas_emu": rules.canvas.model_dump(mode="json"),
+        "content_box_pt": {k: v * PT_PER_INCH for k, v in box.items()},
+        "zone_coordinates": "percent of content_box, NOT percent of canvas",
+        "conversion": {
+            "x_pt": "content_box_pt.x + content_box_pt.w * x_pct / 100",
+            "y_pt": "content_box_pt.y + content_box_pt.h * y_pct / 100",
+            "w_pt": "content_box_pt.w * w_pct / 100",
+            "h_pt": "content_box_pt.h * h_pct / 100",
+        },
+        "rules_sha256": hashlib.sha256(rules_path.read_bytes()).hexdigest(),
+        "profile_sha256": hashlib.sha256(profile_path.read_bytes()).hexdigest(),
+    }
+
+
 def _resolve_content_box(
     profile: Any, rules: CompiledOntology
 ) -> tuple[dict[str, float], bool, str, list[str]]:

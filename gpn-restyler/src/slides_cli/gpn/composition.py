@@ -348,10 +348,17 @@ def _bind_sequence(tree: CompositionTree, intent: Any) -> None:
 
 def _bind_nest(tree: CompositionTree, intent: Any) -> None:
     zones = list(getattr(intent, "zones", []) or [])
+    nest_id = f"nest-{getattr(intent, 'candidate_id', 'x')}"
+    # `frame` already binds a nest container; listing both `frame` and `nest`
+    # must not append the same constraint id twice. A duplicated hard
+    # constraint makes the allocator's ordering unstable (the same plan
+    # reorders text blocks only when the operator is declared twice).
+    if any(c.id == nest_id for c in tree.constraints):
+        return
     if tree.root is not None and len(zones) > 1:
         tree.constraints.append(
             LayoutConstraint(
-                id=f"nest-{getattr(intent, 'candidate_id', 'x')}",
+                id=nest_id,
                 kind="nest",
                 target_ids=[f"zone:{z.zone_id}" for z in zones],
                 value={"container": "root", "padding_pt": 7.2, "no_new_hierarchy": True},

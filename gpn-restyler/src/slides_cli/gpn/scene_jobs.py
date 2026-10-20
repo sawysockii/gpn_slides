@@ -124,9 +124,20 @@ def comparison_coverage(state: Any, eligible: list[str]) -> tuple[bool, dict]:
     This is a search policy, not a corporate style constant. Invalid
     alternatives remain visible as rejected evidence, never selectable.
     """
-    groups: dict[str, list[str]] = {sid: [] for sid in state.slide_candidates}
-    signatures: dict[str, set[str]] = {sid: set() for sid in groups}
     root = Path(state.run_dir)
+    # A partially materialized frontier is not the deck's expected scope.
+    # Include slides that do not have any concept/candidate yet.
+    expected = set(state.slide_candidates)
+    semantic_path = root / "inputs/semantic_deck.json"
+    if semantic_path.is_file():
+        expected.update(
+            s["source_slide_id"] for s in json.loads(semantic_path.read_text())["slides"]
+        )
+    source_path = root / "source_ir.json"
+    if source_path.is_file():
+        expected.update(s["id"] for s in json.loads(source_path.read_text())["slides"])
+    groups: dict[str, list[str]] = {sid: [] for sid in sorted(expected)}
+    signatures: dict[str, set[str]] = {sid: set() for sid in groups}
     accepted_slides = {
         sid
         for job in state.deck_candidates

@@ -525,7 +525,10 @@ def test_same_part_names_different_sources(tmp_path: Path):
     a = tmp_path / "a.pptx"
     b = tmp_path / "b.pptx"
     fx.build_import_fixture(a)
-    fx.build_import_fixture(b)
+    # The fixture embeds a workbook whose bytes carry a build timestamp, so
+    # two separately built fixtures are NOT byte-identical. Copy the bytes
+    # to get the case this test is about: identical bytes, same hash.
+    b.write_bytes(a.read_bytes())
     pa, cta, outa, ha = tp.load_source_package(a)
     pb, ctb, outb, hb = tp.load_source_package(b)
     assert ha == hb  # identical bytes: same hash is honest here

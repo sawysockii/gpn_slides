@@ -652,6 +652,164 @@ def test_u12_classification_does_not_use_area_as_a_semantic_classifier() -> (
     assert all(u.evidence for u in units.values())
 
 
+def test_required_composition_member_cannot_be_authorized_away() -> None:
+    """An omit/recompose authorization cannot delete a required vector.
+
+    NTC c3's cyan edge is a member of required composition s0:rel:fabric.
+    The ledger says recompose, but a required composition has no native
+    relation renderer, so authorizing the arrow away leaves an empty frame.
+    Classification must keep it required regardless of the decision.
+    """
+    from types import SimpleNamespace
+
+    from slides_cli.gpn.models import (
+        SemanticRelation,
+        SemanticSlide,
+        SemanticUnit,
+        SourceEvidenceRef,
+        TransformLedger,
+        TypedContentPayload,
+    )
+    from slides_cli.gpn.visual_norm import classify_visual_units
+
+    arrow = SimpleNamespace(
+        id="arrow1",
+        kind="shape",
+        local_box=SimpleNamespace(x=0, y=0, w=100, h=100),
+        payload=SimpleNamespace(
+            paragraphs=[],
+            source_line=SimpleNamespace(begin_arrow="none", end_arrow="triangle"),
+        ),
+    )
+    evidence = SourceEvidenceRef(
+        artifact_id="a", relative_path="p", sha256="s", object_id="arrow1"
+    )
+    slide = SemanticSlide(
+        source_slide_id="s1",
+        units=[
+            SemanticUnit(
+                id="u1",
+                kind="diagram_part",
+                content=TypedContentPayload(text=""),
+                source_refs=[evidence],
+                preservation="required_semantic",
+            )
+        ],
+        relations=[
+            SemanticRelation(
+                id="rel1",
+                kind="composition",
+                from_unit_ids=["u1"],
+                to_unit_ids=["u2"],
+                directed=False,
+                preservation="required",
+            )
+        ],
+    )
+
+    def allow_recompose(*_args, **_kwargs):
+        return SimpleNamespace(
+            allowed=True,
+            reason="arrow edge re-expressed natively",
+            authorization_ref="harness:recompose",
+        )
+
+    units = classify_visual_units(
+        [arrow],
+        slide,
+        TransformLedger(source_snapshot="snap"),
+        "snap",
+        can_omit=allow_recompose,
+    )
+    assert len(units) == 1
+    assert units[0].required is True
+    assert units[0].kind == "diagram"
+    assert "cannot waive" in " ".join(units[0].evidence)
+
+
+def test_conditional_palette_token_is_a_normative_stroke() -> None:
+    """A conditional colour (cyan) may recolour a required edge.
+
+    The source arrow is #2FB4E9, allowed only through the compiled
+    conditional token. If the planner palette omits conditional colours,
+    the plan becomes unresolved and the edge disappears again.
+    """
+    from types import SimpleNamespace
+
+    from slides_cli.gpn.models import VisualUnit
+    from slides_cli.gpn.visual_norm import plan_visual_normalization
+
+    rules = SimpleNamespace(
+        colors={},
+        conditional_colors={"cyan": SimpleNamespace(rgb="2FB3E9")},
+    )
+    unit = VisualUnit.model_validate({
+        "unit_id": "vu:edge",
+        "source_refs": ["edge1"],
+        "kind": "diagram",
+        "required": True,
+        "internal_topology": _topology("edge1"),
+    })
+    plan = plan_visual_normalization(unit, None, rules, {}, stroke_token="cyan")
+    assert plan.action == "keep_native_recolor"
+    assert "cyan" in plan.reason
+
+
+def test_declared_foreground_reaches_shape_text(monkeypatch) -> None:
+    """A text-bearing shape must keep its declared surface foreground.
+
+    NTC c3 rendered a black label on the blue panel because emit_shape
+    delegated to emit_text with only the box and role, dropping the
+    foreground token.
+    """
+    from types import SimpleNamespace
+
+    from slides_cli.gpn import native as N
+
+    captured: dict[str, object] = {}
+
+    class _Element:
+        def getparent(self):
+            return SimpleNamespace(remove=lambda _el: None)
+
+    class _Shape:
+        _element = _Element()
+        text_frame = SimpleNamespace(clear=lambda: None)
+
+    monkeypatch.setattr(N.adapter, "add_textbox", lambda *_a, **_k: _Shape())
+    monkeypatch.setattr(
+        N.adapter, "strip_shape_effect_inheritance", lambda _shape: None
+    )
+
+    def fake_emit_text(_text, resolved, _slide, context, **_kwargs):
+        captured.update(resolved)
+        context.emission_records.append(SimpleNamespace(address="addr"))
+        return "addr"
+
+    monkeypatch.setattr(N, "emit_text", fake_emit_text)
+    payload = SimpleNamespace(
+        text=SimpleNamespace(
+            paragraphs=[
+                SimpleNamespace(
+                    runs=[SimpleNamespace(text="НТЦ + ДО", field=None)]
+                )
+            ]
+        )
+    )
+    context = SimpleNamespace(issues=[], emission_records=[])
+    N.emit_shape(
+        payload,
+        {
+            "box_emu": {"x": 0, "y": 0, "w": 10, "h": 10},
+            "role": "large_metric",
+            "foreground_token": "white",
+        },
+        object(),
+        context,
+    )
+    assert captured["foreground_token"] == "white"
+
+
 # ---------------------------------------------------------------------------
 # U09 — white-on-white brand asset, proven from bytes
 # ---------------------------------------------------------------------------
@@ -1266,3 +1424,19 @@ def test_slide_background_token_flows_to_native_bytes(tmp_path: Path) -> None:
           "p": "http://schemas.openxmlformats.org/presentationml/2006/main"}
     fills = xml.findall(".//p:bg//a:srgbClr", ns)
     assert [f.get("val") for f in fills] == ["004596"]
+
+
+def test_background_applied_is_informational_but_real_paint_errors_block() -> None:
+    """§6: the successful ``BACKGROUND_APPLIED`` event from
+    ``native.set_slide_background`` is a legitimate normative outcome and
+    must not block eligibility by itself; genuine paint/visibility failures
+    stay blocking."""
+    from slides_cli.gpn.restyle_runner import _INFORMATIONAL_FINDING_CODES
+
+    assert "BACKGROUND_APPLIED" in _INFORMATIONAL_FINDING_CODES
+    for blocking in (
+        "VISUAL_REPRESENTATION_UNRESOLVED",
+        "SURFACE_TOKEN_UNKNOWN",
+        "DECOR_FILL_NORMALIZED_FAILED",
+    ):
+        assert blocking not in _INFORMATIONAL_FINDING_CODES

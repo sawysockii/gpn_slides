@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -65,6 +66,87 @@ def _norm_ps(name: str) -> str:
     """Normalize a PostScript-like font name for comparison."""
     cleaned = re.sub(r"^[A-Z]{6}\+", "", name or "")
     return re.sub(r"[^a-z0-9]", "", cleaned.lower())
+
+
+def _normalize_platform1_family(path: Path, family: str) -> None:
+    """Give the macOS font backend one unambiguous family name per face.
+
+    The shipped GPN OpenType files expose the same platform-1 family
+    (``GPN_DIN``) for every weight while the Windows name table carries the
+    full family (``GPN_DIN Condensed Bold`` etc.).  LibreOffice on macOS
+    resolves the platform-1 record, so all weights collapse to the first
+    Regular face.  This rewrites *render copies only*; the inventory bytes
+    and the product PPTX are never modified.
+    """
+    from fontTools.ttLib import TTFont
+
+    font = TTFont(path)
+    for record in font["name"].names:
+        if record.platformID != 1:
+            continue
+        if record.nameID in (1, 4, 16):
+            record.string = family
+    font.save(path)
+
+
+def _prepare_isolated_font_home(bundle: Any, root: Path) -> tuple[Path | None, dict[str, Any]]:
+    """Build a render-only HOME containing exactly the bound verified faces.
+
+    The normal user HOME is not used for the renderer: mixing the FontBase
+    copies with the per-user duplicates is what collapsed all GPN weights to
+    one face.  A clean HOME plus normalized platform-1 names makes the native
+    render use the face the saved XML asked for.
+    """
+    bindings = list(getattr(bundle, "bindings", []) or []) if bundle is not None else []
+    if not bindings:
+        return None, {"faces": [], "normalization": {}, "issues": ["FONT_BUNDLE_EMPTY"]}
+    home = root / "home"
+    fonts_dir = home / "Library" / "Fonts"
+    fonts_dir.mkdir(parents=True, exist_ok=True)
+    (home / ".config").mkdir(exist_ok=True)
+    (home / ".cache").mkdir(exist_ok=True)
+    normalization: dict[str, str] = {}
+    faces: list[str] = []
+    issues: list[str] = []
+    used: set[str] = set()
+    for index, binding in enumerate(bindings):
+        raw = str(getattr(binding, "path", "") or "")
+        sha = str(getattr(binding, "sha256", "") or "")
+        face = str(getattr(binding, "internal_name", "") or "")
+        if not raw or not sha or not face:
+            continue
+        source = Path(raw)
+        if not source.is_file():
+            issues.append(f"FONT_RENDER_COPY_MISSING:{face}")
+            continue
+        if index is not None and getattr(binding, "face_index", None) is not None:
+            issues.append(f"FONT_COLLECTION_UNSUPPORTED:{face}")
+            continue
+        key = f"{face}:{sha}"
+        if key in used:
+            continue
+        used.add(key)
+        target = fonts_dir / f"{len(used):02d}-{source.name}"
+        shutil.copyfile(source, target)
+        try:
+            _normalize_platform1_family(target, face)
+        except Exception as exc:  # noqa: BLE001 - render evidence, not product
+            issues.append(f"FONT_NAME_NORMALIZE_FAILED:{face}:{type(exc).__name__}")
+            continue
+        normalization[face] = _sha256(target)
+        faces.append(face)
+    environment = hashlib.sha256(
+        json.dumps(
+            {"faces": sorted(normalization), "hashes": normalization},
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+    return home, {
+        "faces": sorted(faces),
+        "normalization": normalization,
+        "issues": issues,
+        "sha256": environment,
+    }
 
 
 def candidate_typefaces(candidate_path: str | Path) -> list[str]:
@@ -143,6 +225,24 @@ def render_native_candidate(
         tmp_path = Path(tmp)
         profile = tmp_path / "lo-profile"
         profile.mkdir()
+        font_home, font_env = _prepare_isolated_font_home(fonts, tmp_path)
+        probe.font_environment_sha256 = str(font_env.get("sha256", "") or "")
+        probe.isolated_font_faces = list(font_env.get("faces", []) or [])
+        probe.font_normalization = dict(font_env.get("normalization", {}) or {})
+        probe.issues.extend(str(i) for i in font_env.get("issues", []) or [])
+        if font_home is not None:
+            probe.checked_scopes.append("isolated_font_environment")
+            missing_from_env = [f for f in expected_faces if f not in probe.isolated_font_faces]
+            if missing_from_env:
+                probe.issues.append(
+                    "expected faces missing from isolated render environment: "
+                    f"{missing_from_env}"
+                )
+        env = dict(os.environ)
+        if font_home is not None:
+            env["HOME"] = str(font_home)
+            env["XDG_CONFIG_HOME"] = str(font_home / ".config")
+            env["XDG_CACHE_HOME"] = str(font_home / ".cache")
         cmd = [
             soffice,
             "--headless",
@@ -155,7 +255,7 @@ def render_native_candidate(
             str(candidate),
         ]
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
         except subprocess.TimeoutExpired:
             probe.result = "fail"
             probe.issues.append(f"renderer timeout after {timeout}s")

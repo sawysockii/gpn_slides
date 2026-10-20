@@ -335,6 +335,40 @@ def test_asset_recovery_from_source_opc(tmp_path: Path):
     assert resolved.data == payload
 
 
+def test_image_natural_recovers_from_source_opc(tmp_path: Path):
+    """Natural image size is measured even when the run store lacks the bytes."""
+    import hashlib
+    import io
+    from types import SimpleNamespace
+
+    from PIL import Image
+
+    from slides_cli.gpn.measured_build import _image_natural_pt
+    from slides_cli.gpn.models import AssetRef
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 4), (10, 20, 30)).save(buffer, format="PNG")
+    payload = buffer.getvalue()
+    digest = hashlib.sha256(payload).hexdigest()
+    asset = AssetRef(
+        sha256=digest,
+        relative_path=f"ab/{digest}.png",
+        media_type="image/png",
+        byte_count=len(payload),
+    )
+    obj = SimpleNamespace(id="img-1", kind="image", payload=SimpleNamespace(asset=asset))
+    slide = SimpleNamespace(objects=[obj])
+
+    out = _image_natural_pt(
+        tmp_path,
+        [slide],
+        source_parts={"ppt/media/image-1-1.png": payload},
+        source_content_types={"ppt/media/image-1-1.png": "image/png"},
+    )
+    assert out["img-1"] == {"w": 8 * 72.0 / 96.0, "h": 4 * 72.0 / 96.0}
+    assert list((tmp_path / "assets").glob(f"*/{digest}.png"))
+
+
 def test_binding_ids_use_full_stable_ids():
     """Source ID prefix collisions must not create identical node IDs."""
     from slides_cli.gpn.geometry import upgrade_legacy_bindings

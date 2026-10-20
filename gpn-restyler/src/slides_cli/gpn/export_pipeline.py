@@ -1158,9 +1158,17 @@ def compare_export_preservation(
 
     authorized_omits = set(policy.get("authorized_omits", []) or [])
     omitted_authorized: list[str] = []
-    for atom_id in atoms:
+    for atom_id, atom in atoms.items():
         if seen.get(atom_id, 0) == 0:
             if atom_id in authorized_omits:
+                omitted_authorized.append(atom_id)
+            elif not str(getattr(atom, "canonical_value", "") or ""):
+                # A valueless atom carries no content, so its absence is not
+                # lost content. An omitted text-less decor shape still leaves
+                # its empty paragraphs in the source ledger under their own
+                # atom ids (not the shape's ``#shape`` id); without this they
+                # would be reported as missing and block preservation even
+                # though C05 protects content, not blank paragraphs.
                 omitted_authorized.append(atom_id)
             else:
                 missing.append(atom_id)

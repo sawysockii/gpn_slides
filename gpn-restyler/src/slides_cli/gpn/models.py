@@ -2011,11 +2011,38 @@ class NativeRenderProbe(BaseModel):
     expected_faces: list[str] = Field(default_factory=list)
     missing_expected_faces: list[str] = Field(default_factory=list)
     font_substitution_detected: bool = False
+    font_environment_sha256: str = ""
+    isolated_font_faces: list[str] = Field(default_factory=list)
+    font_normalization: dict[str, str] = Field(default_factory=dict)
     clip_or_overlap_findings: list[str] = Field(default_factory=list)
     checked_scopes: list[str] = Field(default_factory=list)
     unsupported_scopes: list[str] = Field(default_factory=list)
     support_limits: list[str] = Field(default_factory=list)
     result: Literal["pass", "fail", "unknown"] = "unknown"
+    issues: list[str] = Field(default_factory=list)
+
+
+class RenderIdentityResult(BaseModel):
+    """Verified identity of one candidate render revision.
+
+    A review is a verdict on *these* pixels, not merely on a PPTX hash.
+    Every file is hashed from disk; a stale manifest, a missing page or a
+    renderer failure yields a named fail/unknown instead of an identity.
+    """
+
+    model_config = StrictModel
+
+    schema_version: str = "render-identity/v1"
+    result: Literal["pass", "fail", "unknown"] = "unknown"
+    candidate_sha256: str = ""
+    render_manifest_sha256: str = ""
+    pdf_sha256: str = ""
+    ordered_page_hashes: list[str] = Field(default_factory=list)
+    renderer: str = ""
+    renderer_version: str = ""
+    environment: str = ""
+    expected_page_scope: list[int] = Field(default_factory=list)
+    font_environment_sha256: str = ""
     issues: list[str] = Field(default_factory=list)
 
 
@@ -2878,6 +2905,43 @@ class VisualNormalizationPlan(BaseModel):
     approval_ref: str = ""
     reason: str = ""
     evidence: list[str] = Field(default_factory=list)
+
+
+class VisualCoverageEntry(BaseModel):
+    model_config = StrictModel
+
+    unit_id: str = ""
+    source_refs: list[str] = Field(default_factory=list)
+    kind: str = ""
+    required: bool = True
+    region_ref: str = ""
+    surface_token: str = ""
+    stroke_token: str = ""
+    foreground_token: str = ""
+    resolution: Literal[
+        "painted", "brand_asset", "text_foreground", "missing_region", "unresolved", "not_required"
+    ] = "unresolved"
+    issues: list[str] = Field(default_factory=list)
+
+
+class VisualCoverageReport(BaseModel):
+    """Pre-build coverage of every required visual unit by a painted region."""
+
+    model_config = StrictModel
+
+    schema_version: str = "scene-visual-coverage/v1"
+    ok: bool = False
+    expected_required_units: list[str] = Field(default_factory=list)
+    present_units: list[str] = Field(default_factory=list)
+    absent_units: list[str] = Field(default_factory=list)
+    missing_region: list[str] = Field(default_factory=list)
+    missing_surface: list[str] = Field(default_factory=list)
+    missing_stroke: list[str] = Field(default_factory=list)
+    missing_foreground: list[str] = Field(default_factory=list)
+    unresolved: list[str] = Field(default_factory=list)
+    empty_regions: list[str] = Field(default_factory=list)
+    entries: list[VisualCoverageEntry] = Field(default_factory=list)
+    issues: list[str] = Field(default_factory=list)
 
 
 class BrandAssetPlan(BaseModel):

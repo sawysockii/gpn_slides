@@ -1232,7 +1232,17 @@ def emit_shape(
         shape.text_frame.clear()
         emit_text(
             text,
-            {"box_emu": box, "role": resolved.get("role", getattr(text, "role", "unknown"))},
+            {
+                "box_emu": box,
+                "role": resolved.get("role", getattr(text, "role", "unknown")),
+                # A declared surface may set the text foreground (§5.3).
+                # Dropping these here left a black label on a blue panel:
+                # the surface painted, but its text never received the
+                # foreground token.
+                "foreground_token": resolved.get("foreground_token", ""),
+                "surface_token": resolved.get("surface_token", ""),
+                "stroke_token": resolved.get("stroke_token", ""),
+            },
             slide,
             context,
             rules=rules,

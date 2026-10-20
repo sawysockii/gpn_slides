@@ -157,6 +157,7 @@ class RunState(BaseModel):
     # as an accepted plan (§5.1/§5.2).
     processed_scene_responses: list[str] = Field(default_factory=list)
     rejected_scene_reports: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    materialized_brief_responses: list[str] = Field(default_factory=list)
     registered_concept_responses: list[str] = Field(default_factory=list)
     budget: SearchBudget = Field(default_factory=SearchBudget)
     tasks_used: int = 0
@@ -681,6 +682,10 @@ def _enqueue(state: RunState, task: ModelTask) -> None:
         if existing.request_id == task.request_id:
             if existing.input_fingerprint != task.input_fingerprint:
                 raise RunnerError("REQUEST_ID_INPUT_CONFLICT")
+            if existing.status == "superseded":
+                # Same immutable packet and same current bytes: the prior
+                # task was retired for a stale render, not for wrong content.
+                existing.status = "pending"
             return
     if state.tasks_used + len(_pending_refs(state)) >= state.budget.max_model_tasks:
         raise RunnerError(
@@ -1000,24 +1005,31 @@ class ModelTaskResponseShim:
 
 def _advance_stage(state: RunState, findings: list[TypedFinding]) -> list[ActionRef]:
     """Deterministic stage machine. Returns executed actions."""
-    from .design import (  # noqa: PLC0415
-        build_slide_design_brief,
-        generate_visual_concepts,
-    )
+    from .design import build_slide_design_brief  # noqa: PLC0415
     from .document_ingest import semantic_task_for  # noqa: PLC0415
 
     actions: list[ActionRef] = []
     run_dir = Path(state.run_dir)
-    if state.stage not in (
-        "ingest",
-        "semantic",
-        "design_briefs",
-        "visual_concepts",
-        "scene_generation",
-        "build",
-        "accepted",
-    ) and _consume_scene_responses(state, findings, run_dir):
-        state.stage = "build"
+    # Materialize each answered slide even while another slide still waits.
+    # This is independent of the global progress label, including late
+    # briefs/concepts that arrive after other slides have reached review.
+    if state.stage not in ("ingest", "profile", "semantic", "accepted"):
+        from .design_frontier import pump_current_reviews, pump_design_frontier
+
+        design_actions = pump_design_frontier(state, findings)
+        actions.extend(design_actions)
+        actions.extend(pump_current_reviews(state))
+        if state.stage == "blocked" and design_actions:
+            state.stage = "design_briefs"
+            state.terminal_reason = ""
+        if _consume_scene_responses(state, findings, run_dir):
+            state.stage = "build"
+            state.terminal_reason = ""
+        elif state.stage in ("design_briefs", "visual_concepts", "scene_generation"):
+            if _has_pending_kind(state, ModelTaskKind.SCENE_GENERATION):
+                state.stage = "scene_generation"
+            elif _has_pending_kind(state, ModelTaskKind.VISUAL_CONCEPT_GENERATION):
+                state.stage = "visual_concepts"
 
     if state.stage == "blocked" and "retry budget" in (state.terminal_reason or ""):
         # Consumed-but-unmaterialized scene revisions park the run as
@@ -1103,181 +1115,10 @@ def _advance_stage(state: RunState, findings: list[TypedFinding]) -> list[Action
                     ActionRef(action="issue_design_briefs", detail=f"{len(deck.slides)} slides")
                 )
 
-    elif state.stage == "design_briefs":
-        briefs = _responses_of_kind(state, ModelTaskKind.DESIGN_BRIEF)
-        if briefs and not _has_pending_kind(state, ModelTaskKind.DESIGN_BRIEF):
-            from .models import SlideDesignBrief  # noqa: PLC0415
-
-            for response in briefs:
-                # §3.2: a malformed model response becomes a typed finding
-                # and a repair task, never a hard error that wedges the run
-                # after the response has already been consumed.
-                try:
-                    brief = SlideDesignBrief.model_validate(response.payload)
-                except ValidationError as exc:
-                    findings.append(
-                        TypedFinding(
-                            code="DESIGN_BRIEF_INVALID",
-                            severity="error",
-                            message=f"{response.request_id}: {exc.errors()[0]['msg']}"
-                            f" at {exc.errors()[0]['loc']}",
-                        )
-                    )
-                    old_task = next(
-                        (t for t in state.task_queue if t.request_id == response.request_id), None
-                    )
-                    _enqueue(state, _design_brief_retry(state, old_task, response))
-                    continue
-                brief_dir = run_dir / "design_briefs"
-                brief_dir.mkdir(parents=True, exist_ok=True)
-                safe_sid = _safe_name(brief.slide_id)
-                (brief_dir / f"{safe_sid}.json").write_text(
-                    brief.model_dump_json(indent=1), encoding="utf-8"
-                )
-                task = generate_visual_concepts(
-                    brief,
-                    approved_examples=[],
-                    supported_primitives=[
-                        "process",
-                        "structure",
-                        "comparison",
-                        "table",
-                        "data",
-                        "typographic",
-                        "evidence",
-                    ],
-                    run_dir=run_dir,
-                    request_id=f"T-concepts-{brief.slide_id}",
-                )
-                _enqueue(state, task)
-            state.stage = "visual_concepts"
-            actions.append(ActionRef(action="issue_concept_tasks", detail=f"{len(briefs)} briefs"))
-
-    elif state.stage == "visual_concepts":
-        concepts = [
-            r
-            for r in _responses_of_kind(state, ModelTaskKind.VISUAL_CONCEPT_GENERATION)
-            if r.request_id not in state.registered_concept_responses
-        ]
-        if concepts and not _has_pending_kind(state, ModelTaskKind.VISUAL_CONCEPT_GENERATION):
-            from .design import validate_concept_fidelity  # noqa: PLC0415
-            from .models import (  # noqa: PLC0415
-                SemanticDeck,
-                SlideDesignBrief,
-                VisualConcept,
-            )
-
-            # map concept task request_id -> slide_id for provenance
-            task_slide = {}
-            for t in state.task_queue:
-                if t.kind != ModelTaskKind.VISUAL_CONCEPT_GENERATION:
-                    continue
-                # Provenance comes from the immutable task packet's
-                # design_brief.slide_id, never from parsing the opaque
-                # request id (§3/§5.2).
-                sid = ""
-                packet_path = run_dir / t.packet
-                try:
-                    packet = json.loads(packet_path.read_text(encoding="utf-8"))
-                    sid = str(packet.get("design_brief", {}).get("slide_id", ""))
-                except (OSError, ValueError):
-                    sid = ""
-                task_slide[t.request_id] = sid
-            for response in concepts:
-                payload = response.payload
-                sid = task_slide.get(response.request_id, "")
-                items = payload.get("concepts", [payload])
-                for item in items:
-                    try:
-                        concept = VisualConcept.model_validate(item)
-                    except ValueError as exc:
-                        findings.append(
-                            TypedFinding(
-                                code="CONCEPT_INVALID",
-                                severity="error",
-                                message=f"invalid concept: {exc}",
-                            )
-                        )
-                        continue
-                    # Unique key per slide+concept (plain c1/c2 collide
-                    # across slides).
-                    safe_sid = _safe_name(sid) if sid else "unknown"
-                    key = f"{state.run_id}/{safe_sid}/{concept.concept_id}"
-                    state.candidate_states[key] = "concept_pending"
-                    state.candidate_revisions[key] = 0
-                    # persist the validated concept for scene authoring,
-                    # fidelity checks and design review provenance
-                    cdir = run_dir / "scenes" / safe_sid / concept.concept_id
-                    cdir.mkdir(parents=True, exist_ok=True)
-                    (cdir / "concept.json").write_text(
-                        concept.model_dump_json(indent=1), encoding="utf-8"
-                    )
-                    # deterministic fidelity gate (§10.4.6): required
-                    # units/relations mapped, no invented causality/data
-                    if sid:
-                        try:
-                            deck = SemanticDeck.model_validate_json(
-                                (run_dir / "inputs" / "semantic_deck.json").read_text(
-                                    encoding="utf-8"
-                                )
-                            )
-                            sem_slide = next(s for s in deck.slides if s.source_slide_id == sid)
-                            brief = SlideDesignBrief.model_validate_json(
-                                (run_dir / "design_briefs" / f"{safe_sid}.json").read_text(
-                                    encoding="utf-8"
-                                )
-                            )
-                            check = validate_concept_fidelity(
-                                concept, brief, sem_slide, _applicable_rules(run_dir)
-                            )
-                            (cdir / "fidelity.json").write_text(
-                                check.model_dump_json(indent=1), encoding="utf-8"
-                            )
-                            if not check.valid:
-                                state.candidate_states[key] = "concept_pending"
-                                for f in check.fidelity_findings:
-                                    findings.append(f)
-                        except (OSError, ValueError, StopIteration):
-                            pass
-                    if sid:
-                        state.concept_slide[key] = sid
-                        state.slide_candidates.setdefault(sid, [])
-                        if concept.concept_id not in state.slide_candidates[sid]:
-                            state.slide_candidates[sid].append(concept.concept_id)
-            for response in concepts:
-                state.registered_concept_responses.append(response.request_id)
-            # schedule scene_generation per concept, exactly once per
-            # logical subject (§4 step 2).
-            for key in list(state.candidate_states.items()):
-                sid = _slide_id_for_key(state, key[0])
-                concept_id = key[0].split("/")[-1]
-                already = any(
-                    t.kind in (ModelTaskKind.SCENE_GENERATION, ModelTaskKind.SCENE_REPAIR)
-                    and t.candidate_key is not None
-                    and _safe_name(t.candidate_key.source_slide_id) == _safe_name(sid)
-                    and t.candidate_key.candidate_id == concept_id
-                    for t in state.task_queue
-                )
-                if already:
-                    continue
-                task = _scene_generation_task(state, key[0])
-                if task is not None:
-                    _enqueue(state, task)
-            state.stage = "scene_generation"
-            actions.append(
-                ActionRef(
-                    action="register_concepts", detail=f"{len(state.candidate_states)} candidates"
-                )
-            )
-
-    elif state.stage == "scene_generation":
-        # Process every available scene response on every resume; a
-        # global "wait for all scenes" barrier lets one slow candidate
-        # starve an already-accepted scene (§6).
-        written = _consume_scene_responses(state, findings, run_dir)
-        if written:
-            state.stage = "build"
-            actions.append(ActionRef(action="scene_plans_written", detail=f"{written} plans"))
+    elif state.stage in ("design_briefs", "visual_concepts", "scene_generation"):
+        # pump_design_frontier above advances individual responses. Pending
+        # briefs or concept sets on other slides impose no deck-wide barrier.
+        pass
 
     if state.stage == "build":
         # Retry revisions arrive while the run sits in build: materialize
@@ -1395,6 +1236,20 @@ def _advance_stage(state: RunState, findings: list[TypedFinding]) -> list[Action
             )
 
     if state.stage == "visual_review":
+        # Re-rendering after a font/renderer change is deterministic work.
+        # It supersedes reviews of the old pixels and issues current ones;
+        # it never asks the model to re-author the same scene.
+        refreshed = _render_all_candidates(state)
+        for deck in state.deck_candidates:
+            if not deck.get("render_manifest"):
+                continue
+            task = _visual_review_task(state, deck)
+            if task is not None:
+                _enqueue(state, task)
+        if refreshed:
+            actions.append(
+                ActionRef(action="render_refreshed", detail=f"{refreshed} current renders")
+            )
         reviews = _responses_of_kind(state, ModelTaskKind.VISUAL_REVIEW)
         if reviews and not _has_pending_kind(state, ModelTaskKind.VISUAL_REVIEW):
             for response in reviews:
@@ -1414,6 +1269,13 @@ def _advance_stage(state: RunState, findings: list[TypedFinding]) -> list[Action
             )
 
     if state.stage == "design_review":
+        _render_all_candidates(state)
+        for deck in state.deck_candidates:
+            if not deck.get("render_manifest"):
+                continue
+            task = _design_review_task(state, deck)
+            if task is not None:
+                _enqueue(state, task)
         reviews = _responses_of_kind(state, ModelTaskKind.DESIGN_REVIEW)
         if reviews and not _has_pending_kind(state, ModelTaskKind.DESIGN_REVIEW):
             for response in reviews:
@@ -1787,14 +1649,12 @@ def _scene_generation_task(state: RunState, key: str) -> ModelTask | None:
     digest_path = run_dir / "model_rule_digest.md"
     if digest_path.is_file():
         packet_payload["model_rule_digest_md"] = digest_path.read_text(encoding="utf-8")
-    required_images = []
-    source_ir = _load_json(run_dir / "source_ir.json")
-    for index, source_slide in enumerate(source_ir.get("slides", []), start=1):
-        if source_slide.get("id") == sid:
-            image = run_dir / "source_render" / f"slide-{index:02d}.png"
-            if image.is_file():
-                required_images.append(str(image.resolve()))
+    from .frame_contract import model_frame_context
+    from .source_images import source_slide_images
+
+    required_images = source_slide_images(run_dir, sid)
     packet_payload["required_images"] = required_images
+    packet_payload["layout_frame"] = model_frame_context(run_dir)
     packet_payload["input_sha256"] = state.snapshots.input_sha256
     fingerprint = _sha_json(packet_payload)
     request_id = _make_request_id(f"scene:{key}", fingerprint, 0)
@@ -1887,6 +1747,7 @@ def _build_all_deck_candidates(state: RunState, findings: list[TypedFinding]) ->
 _INFORMATIONAL_FINDING_CODES = frozenset(
     {
         "AUTHORIZED_OMITS",
+        "ASSET_RECOVERED_FROM_SOURCE_OPC",
         "DECOR_FILL_NORMALIZED",
         "DECOR_LINE_NORMALIZED",
         "DECOR_CLUSTER_OMITTED",
@@ -1896,6 +1757,7 @@ _INFORMATIONAL_FINDING_CODES = frozenset(
         "GEOMETRY_NORMALIZED",
         "REEXPRESSED_RELATIONS",
         "SOURCE_BOUND_TWICE",
+        "BACKGROUND_APPLIED",
         "BUDGET_EXTENDED",
         "ENGINE_UPDATE_REEVALUATION",
         "UNBLOCKED_FOR_MATERIALIZATION",
@@ -2043,7 +1905,15 @@ def _build_deck_candidate(
     # handling) never block eligibility by themselves; every other code
     # is a blocking finding for this candidate.
     blocking = sorted(set(codes) - _INFORMATIONAL_FINDING_CODES)
-    eligible = operation == "completed" and saved_ok and measured_ok and not blocking
+    # `needs_review` is the build engine's "candidate bytes exist, checks
+    # passed, awaiting visual review" state. Such a candidate must enter the
+    # review queue; only true failures and blocking findings are ineligible.
+    eligible = (
+        operation in ("completed", "needs_review")
+        and saved_ok
+        and measured_ok
+        and not blocking
+    )
     reason = (
         "measured resolve, saved checks and render prerequisites all current"
         if eligible
@@ -2096,6 +1966,19 @@ def _visual_review_task(state: RunState, deck: dict[str, Any]) -> ModelTask | No
     return make_review_task(state, deck)
 
 
+def _review_packet_identity(state: RunState, request_id: str) -> dict[str, Any]:
+    root = Path(state.run_dir)
+    task = next((t for t in state.task_queue if t.request_id == request_id), None)
+    if task is None:
+        return {}
+    try:
+        packet = json.loads((root / task.packet).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    identity = packet.get("render_identity") or {}
+    return dict(identity) if isinstance(identity, dict) else {}
+
+
 def _write_visual_review(state: RunState, response: ModelTaskResponse) -> None:
     run_dir = Path(state.run_dir)
     payload = response.payload
@@ -2104,6 +1987,7 @@ def _write_visual_review(state: RunState, response: ModelTaskResponse) -> None:
         "task_id": response.request_id,
         "deck_key": deck_key,
         "candidate_sha256": payload.get("candidate_sha256", ""),
+        "render_identity": _review_packet_identity(state, response.request_id),
         "verdict": payload.get("verdict", "repair"),
         "pages": payload.get("pages", []),
         "findings": payload.get("findings", []),
@@ -2128,6 +2012,7 @@ def _write_design_review(state: RunState, response: ModelTaskResponse) -> None:
         "task_id": response.request_id,
         "deck_key": deck_key,
         "candidate_sha256": payload.get("candidate_sha256", ""),
+        "render_identity": _review_packet_identity(state, response.request_id),
         "verdict": payload.get("verdict", "repair"),
         "dimensions": payload.get("dimensions", []),
         "findings": payload.get("findings", []),
@@ -2148,10 +2033,13 @@ def _advance_build_stages(state: RunState, findings: list[TypedFinding]) -> list
 
         eligible = _collect_eligible(state)
         complete, missing = comparison_coverage(state, eligible)
+        upstream_kinds = (
+            ModelTaskKind.DESIGN_BRIEF, ModelTaskKind.VISUAL_CONCEPT_GENERATION,
+            ModelTaskKind.SCENE_GENERATION, ModelTaskKind.SCENE_REPAIR,
+            ModelTaskKind.VISUAL_REVIEW, ModelTaskKind.DESIGN_REVIEW,
+        )
         pending_scenes = any(
-            t.status == "pending"
-            and t.kind in (ModelTaskKind.SCENE_GENERATION, ModelTaskKind.SCENE_REPAIR)
-            for t in state.task_queue
+            t.status == "pending" and t.kind in upstream_kinds for t in state.task_queue
         )
         if complete and not pending_scenes:
             rel = _write_selection_packet(run_dir, eligible, state)
@@ -2177,7 +2065,7 @@ def _advance_build_stages(state: RunState, findings: list[TypedFinding]) -> list
             retries = repair_failed_candidates(state)
             pending = any(
                 t.status == "pending"
-                and t.kind in (ModelTaskKind.SCENE_GENERATION, ModelTaskKind.SCENE_REPAIR)
+                and t.kind in upstream_kinds
                 for t in state.task_queue
             )
             _atomic_write(
@@ -2307,8 +2195,31 @@ def _collect_eligible(state: RunState) -> list[str]:
             continue
         if des.get("candidate_sha256") != cand_sha:
             continue
-        # §10.1: a candidate that failed its own measured/saved stages is
-        # never eligible for selection, even when the reviews accepted it.
+        # Reviews are verdicts on exact pixels. A re-render with the same
+        # PPTX (font environment, DPI, renderer) invalidates both reviews.
+        from .review_jobs import current_render_identity
+
+        manifest_path = run_dir / str(deck.get("render_manifest", ""))
+        current = current_render_identity(
+            cand_path, manifest_path, expected_page_count=len(deck.get("selection", {}) or {})
+        )
+        if current.result != "pass":
+            continue
+        expected_identity = {
+            "candidate_sha256": current.candidate_sha256,
+            "render_manifest_sha256": current.render_manifest_sha256,
+            "pdf_sha256": current.pdf_sha256,
+            "ordered_page_hashes": current.ordered_page_hashes,
+        }
+        current_reviews = all(
+            all(
+                (review.get("render_identity") or {}).get(k) == v
+                for k, v in expected_identity.items()
+            )
+            for review in (vis, des)
+        )
+        if not current_reviews:
+            continue
         if not deck.get("eligible") or deck.get("render_valid") is not True:
             continue
         eligible.append(deck_key)
@@ -2324,12 +2235,20 @@ def _write_selection_packet(run_dir: Path, eligible: list[str], state: RunState)
         manifest = _load_json(folder / "render/render_manifest.json")
         pngs = [str(folder / "render" / p["image"]) for p in manifest.get("pages", [])]
         images.extend(pngs)
+        from .review_jobs import current_render_identity
+
+        identity = current_render_identity(
+            folder / "candidate.pptx",
+            folder / "render" / "render_manifest.json",
+            expected_page_count=len(job.get("selection", {}) or {}),
+        )
         candidates.append(
             {
                 "deck_key": job["deck_key"],
                 "selection": job["selection"],
                 "candidate_sha256": _sha_file(folder / "candidate.pptx"),
                 "candidate_path": str((folder / "candidate.pptx").relative_to(run_dir)),
+                "render_identity": identity.model_dump(mode="json"),
                 "required_images": pngs,
                 "visual_review": _load_json(folder / "visual_review.json"),
                 "design_review": _load_json(folder / "design_review.json"),
@@ -3018,20 +2937,44 @@ def _gate_source_reports(
             ["saved text remeasure not ok"],
             ["saved_measurement_report.json"],
         )
-    if measure_report.get("ok") and not visibility.get("missing"):
-        out["text_fit_visibility"] = (
-            "pass",
-            units_for("text_fit_visibility"),
-            [],
-            ["saved_measurement_report.json", "required_visibility_report.json"],
-        )
-    else:
-        out["text_fit_visibility"] = (
-            "fail",
-            [],
-            ["fit/visibility not proven"],
-            ["saved_measurement_report.json", "required_visibility_report.json"],
-        )
+    # This is the FINAL-deck gate. A successful single-slide pilot must
+    # never certify all source slides, and an empty `missing` list does
+    # not turn an unknown/unexecuted report into a pass.
+    fit_failures, fit_unknowns = [], []
+    if measure_report.get("ok") is False:
+        fit_failures.append("saved text fit failed")
+    elif measure_report.get("ok") is not True:
+        fit_unknowns.append("saved text fit not proven")
+    if visibility.get("result") == "fail" or visibility.get("missing"):
+        fit_failures.append("required visibility failed")
+    elif visibility.get("result") != "pass":
+        fit_unknowns.append("required visibility not proven")
+    if visibility.get("unknown_required"):
+        fit_unknowns.append("required visibility has unknown atoms")
+    visible_sha = visibility.get("candidate_sha256")
+    if not visible_sha or not final_sha:
+        fit_unknowns.append("visibility candidate identity absent")
+    elif visible_sha != final_sha:
+        fit_failures.append("visibility report describes different candidate bytes")
+    source_ids = [s.get("id") for s in doc("source_ir.json").get("slides", [])]
+    scope_ids = visibility.get("selected_source_slide_ids")
+    if (
+        not source_ids
+        or not all(isinstance(s, str) and s for s in source_ids)
+        or not isinstance(scope_ids, list)
+        or not all(isinstance(s, str) and s for s in scope_ids)
+        or len(set(source_ids)) != len(source_ids)
+        or len(set(scope_ids)) != len(scope_ids)
+        or set(scope_ids) != set(source_ids)
+    ):
+        fit_unknowns.append("visibility report does not cover the full source deck")
+    fit_status = "fail" if fit_failures else "unknown" if fit_unknowns else "pass"
+    out["text_fit_visibility"] = (
+        fit_status,
+        units_for("text_fit_visibility") if fit_status == "pass" else [],
+        fit_failures + fit_unknowns,
+        ["saved_measurement_report.json", "required_visibility_report.json", "source_ir.json"],
+    )
     if not saved_geometry.get("out_of_canvas") and not saved_geometry.get("clipping"):
         out["geometry_overlap"] = (
             "pass",

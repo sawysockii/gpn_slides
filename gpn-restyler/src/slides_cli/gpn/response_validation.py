@@ -52,17 +52,28 @@ def validate_payload(run: Path, task: Any, response: Any) -> list[str]:
             lowered, errors = lower_scene_plan(payload["scene_plan"], slide, known)
             if errors:
                 return errors
-            if any(z.get("paragraph_groups") for z in lowered.get("zones", [])):
-                from .models import SourceDeckIR
-                from .text_flow import build_rich_paragraphs
+            from .export_pipeline import _load_semantic_gate_inputs
+            from .models import SourceDeckIR
+            from .text_flow import build_rich_paragraphs
+            from .visual_norm import check_scene_visual_coverage
 
+            # The pre-build visual coverage gate needs a fully typed source
+            # IR (object kind, payload, geometry) and the transformation
+            # ledger that authorizes omissions. A production run always has
+            # both: the import stage writes the typed IR and the semantic
+            # stage writes the ledger before any scene is requested. A run
+            # without them cannot be classified, so the gate does not
+            # silently reject the answer; the build stage still refuses to
+            # emit such a candidate.
+            try:
                 typed_source = SourceDeckIR.model_validate(source)
-                objects = {
-                    o.id: o
-                    for s in typed_source.slides
-                    if s.id == key.source_slide_id
-                    for o in s.objects
-                }
+            except ValueError:
+                return []
+            source_slide = next(
+                s for s in typed_source.slides if s.id == key.source_slide_id
+            )
+            objects = {o.id: o for o in source_slide.objects}
+            if any(z.get("paragraph_groups") for z in lowered.get("zones", [])):
                 for zone in lowered["zones"]:
                     if zone.get("paragraph_groups"):
                         build_rich_paragraphs(
@@ -72,6 +83,19 @@ def validate_payload(run: Path, task: Any, response: Any) -> list[str]:
                             zone["paragraph_groups"],
                             zone.get("inline_separator", " "),
                         )
+            _, ledger, snapshot = _load_semantic_gate_inputs(run)
+            if ledger is None:
+                return ["SCENE_VISUAL_COVERAGE_LEDGER_MISSING"]
+            coverage = check_scene_visual_coverage(
+                list(source_slide.objects),
+                slide,
+                ledger,
+                snapshot or ledger.source_snapshot,
+                lowered,
+                rules,
+            )
+            if not coverage.ok:
+                return list(coverage.issues) or ["SCENE_VISUAL_COVERAGE_INCOMPLETE"]
             return []
         if kind == "semantic_analysis":
             # Transformation decisions share the response envelope, not the
@@ -135,12 +159,89 @@ def validate_payload(run: Path, task: Any, response: Any) -> list[str]:
                     ):
                         return [f"TRANSFORM_ARROW_WITHOUT_RELATION:{oid}"]
         elif kind == "design_brief":
-            SlideDesignBrief.model_validate(payload)
+            brief = SlideDesignBrief.model_validate(payload)
+            packet = read(run / task.packet)
+            slide = packet["semantic_slide"]
+            if brief.slide_id != slide["source_slide_id"]:
+                return ["BRIEF_SLIDE_IDENTITY_MISMATCH"]
+            units = {u["id"] for u in slide.get("units", [])}
+            required = {
+                u["id"] for u in slide.get("units", []) if u.get("preservation") != "optional"
+            }
+            relations = {r["id"] for r in slide.get("relations", [])}
+            required_relations = {
+                r["id"]
+                for r in slide.get("relations", [])
+                if r.get("preservation", "required") == "required"
+            }
+            if set(brief.required_units) != required:
+                return ["BRIEF_REQUIRED_UNIT_COVERAGE"]
+            if set(brief.required_relations) != required_relations:
+                return ["BRIEF_REQUIRED_RELATION_COVERAGE"]
+            grouped = {uid for group in brief.semantic_groups for uid in group.unit_ids}
+            if required - grouped or grouped - units:
+                return ["BRIEF_GROUP_UNIT_COVERAGE"]
+            group_ids = [g.group_id for g in brief.semantic_groups]
+            if len(set(group_ids)) != len(group_ids) or brief.primary_group_id not in group_ids:
+                return ["BRIEF_GROUP_IDENTITY"]
+            if set(brief.required_relations) - relations:
+                return ["BRIEF_UNKNOWN_RELATION"]
+            if not brief.communication_job.strip() or not brief.intended_takeaway.strip():
+                return ["BRIEF_MEANING_MISSING"]
         elif kind == "visual_concept_generation":
             if not payload.get("concepts"):
                 return ["VISUAL_CONCEPTS_MISSING"]
-            for concept in payload["concepts"]:
-                VisualConcept.model_validate(concept)
+            from .design import validate_concept_fidelity
+
+            packet = read(run / task.packet)
+            brief = SlideDesignBrief.model_validate(packet["design_brief"])
+            deck = SemanticDeck.model_validate(read(run / "inputs/semantic_deck.json"))
+            slide = next(s for s in deck.slides if s.source_slide_id == brief.slide_id)
+            concepts = [VisualConcept.model_validate(c) for c in payload["concepts"]]
+            ids = [c.concept_id for c in concepts]
+            if len(ids) != len(set(ids)):
+                return ["CONCEPT_ID_DUPLICATE"]
+            if any(not cid or "/" in cid or "\\" in cid or cid in (".", "..") for cid in ids):
+                return ["CONCEPT_ID_UNSAFE"]
+            if len(concepts) != packet.get("requested_concept_count", 3):
+                return ["CONCEPT_SET_COUNT_MISMATCH"]
+            signatures = [
+                json.dumps(
+                    {
+                        key: concept.model_dump(mode="json")[key]
+                        for key in (
+                            "group_topology",
+                            "main_visual_encoding",
+                            "reading_path",
+                            "dominance",
+                            "alignment_system",
+                            "whitespace_structure",
+                        )
+                    },
+                    sort_keys=True,
+                    ensure_ascii=False,
+                )
+                for concept in concepts
+            ]
+            if len(set(signatures)) != len(concepts):
+                return ["CONCEPT_SET_NOT_DIVERSE"]
+            known_units = {u.id for u in slide.units}
+            known_relations = {r.id for r in slide.relations}
+            for concept in concepts:
+                if any(
+                    set(m.source_unit_ids) - known_units
+                    or set(m.source_relation_ids) - known_relations
+                    for m in concept.source_to_visual_mapping
+                ):
+                    return [f"CONCEPT_MAPPING_UNKNOWN:{concept.concept_id}"]
+                report = validate_concept_fidelity(
+                    concept, brief, slide, brief.applicable_rule_refs
+                )
+                if not report.valid:
+                    return [
+                        f"CONCEPT_FIDELITY_INVALID:{concept.concept_id}:"
+                        + ";".join(f.code for f in report.fidelity_findings)
+                    ]
         elif kind == "candidate_selection":
             report = SelectionReport.model_validate(payload)
             state = read(run / "run_state.json")
@@ -199,6 +300,31 @@ def validate_payload(run: Path, task: Any, response: Any) -> list[str]:
 
             if hashlib.sha256(candidate.read_bytes()).hexdigest() != packet["candidate_sha256"]:
                 return ["REVIEW_CANDIDATE_CHANGED"]
+            if payload.get("verdict") == "accept":
+                from .review_jobs import current_render_identity
+
+                manifest_path = run / str(packet.get("render_manifest", ""))
+                current = current_render_identity(
+                    candidate,
+                    manifest_path,
+                    expected_page_count=len(packet.get("selection", {}) or {}),
+                )
+                claimed = packet.get("render_identity") or {}
+                for field in (
+                    "candidate_sha256",
+                    "render_manifest_sha256",
+                    "pdf_sha256",
+                ):
+                    if not claimed.get(field) or claimed.get(field) != getattr(current, field):
+                        return [f"REVIEW_RENDER_IDENTITY_STALE:{field}"]
+                if claimed.get("ordered_page_hashes") != current.ordered_page_hashes:
+                    return ["REVIEW_RENDER_IDENTITY_STALE:ordered_page_hashes"]
+                if packet.get("native_render_result") != "pass" or current.result != "pass":
+                    return ["REVIEW_ACCEPT_WITH_FAILED_NATIVE_RENDER"]
+                if current.expected_page_scope != list(
+                    range(1, len(current.ordered_page_hashes) + 1)
+                ):
+                    return ["REVIEW_RENDER_PAGE_SCOPE_INCOMPLETE"]
         return []
     except (OSError, ValueError, TypeError, KeyError, StopIteration) as error:
         return [f"PAYLOAD_INVALID:{type(error).__name__}:{error}"]

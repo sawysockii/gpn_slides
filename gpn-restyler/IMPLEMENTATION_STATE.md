@@ -549,3 +549,77 @@ Append-only. Facts added below; earlier lines are unchanged.
 ### Verification
 - Full test suite: **392 passed, 4 skipped** (no regressions).
 - `ruff check src/ tests/`: **clean**.
+
+## Stage 17 (2026-10-20) — render identity, font isolation, coverage
+
+Append-only. Earlier lines unchanged.
+
+- `gpn/render.py`: `_normalize_platform1_family`,
+  `_prepare_isolated_font_home`; per-face platform-1 family names;
+  `shutil.copyfile`; probe reports `font_environment_sha256`,
+  `isolated_font_faces`, `font_normalization`.
+- `gpn/models.py`: `RenderIdentityResult`, `VisualCoverageEntry`,
+  `VisualCoverageReport`.
+- `gpn/review_jobs.py`: `current_render_identity`,
+  `_supersede_stale_reviews`; render manifest includes renderer/env;
+  `make_review_task` embeds `render_identity`.
+- `gpn/response_validation.py`: `accept` requires fresh identity and
+  `native_render_result=pass`; scene responses run
+  `check_scene_visual_coverage` before commit.
+- `gpn/restyle_runner.py`: visual/design review stages refresh renders
+  and issue only current reviews; `_collect_eligible` compares review
+  identity; selection packet carries identity.
+- `gpn/visual_norm.py`: `check_scene_visual_coverage` — required units
+  need palette fill/stroke/foreground or brand asset; missing region is
+  a named pre-build error.
+- Verification: ruff clean on touched files; targeted pytest 37 passed;
+  III cover renders pass with all three GPN faces.
+
+## Stage 18 (2026-10-20) — build unblock, supersede fix, quality stop
+
+Append-only. Earlier lines unchanged.
+
+- All three recovery runs were moved from `stage=blocked`
+  (`COMPARATIVE_VARIANTS_MISSING`) back to `build`; builds then ran:
+  III 60 candidates/57 renders, NTC 24/2 diagnostic, round_table 123/90.
+- `gpn/review_jobs.py::_supersede_stale_reviews` now compares only the
+  identity fields the probe sets; the previous full-dict comparison
+  superseded every pending review.
+- `gpn/restyle_runner.py::_enqueue` reactivates a `superseded` task when
+  `request_id` and `input_fingerprint` are unchanged.
+- III `resume` reached `stage=visual_review`: 57 pending visual reviews,
+  1 pending design review.
+- Quality blocker: auto-generated scenes omit `required_exact` source
+  diagrams/charts. Counts: III 7 image + 1 quote; round_table 29 image +
+  2 quote + 3 chart; NTC 9 text + 45 metric + 7 footnote. Native PNG
+  contact sheets show word-cloud overlap (III slide11), compressed text
+  columns (slide10), ghosted logo (slide0 c1).
+- Verification: `ruff` clean on the two touched files; targeted pytest
+  `test_stage3_native`, `test_stage5_render`, `test_stage7_acceptance`,
+  `test_stage7_runner` exit 0.
+- Not done: selection, assembly, final acceptance, bundle.
+- Next decision: source-layout/asset preservation instead of further
+  generative title+body scenes.
+
+## Stage 19 (2026-10-20) — commit of Stage 17–18 state, coverage-gate fix
+
+Append-only. Earlier lines unchanged.
+
+- `gpn/response_validation.py`: the pre-build visual coverage gate now
+  only runs when the source IR validates as `SourceDeckIR`; a run
+  without typed IR/transform ledger no longer rejects a valid scene
+  answer with `PAYLOAD_INVALID`.
+- `tests/gpn/test_stage4_exporter.py`: `test_same_part_names_different_sources`
+  copies fixture bytes (the embedded workbook carries a build timestamp,
+  so two builds are not byte-identical) — the flakiness is gone.
+- New modules committed: `design_frontier.py`, `owned_examples.py`,
+  `source_images.py`, `visibility_scope.py`; new tests
+  `test_delivery_frontier.py`, `test_candidate_visibility_repair.py`.
+- Removed from the repo (history kept): `gpn_delivery_patch/`,
+  `opencode_layout_engine_recovery.md`.
+- `.gitignore`: `/reports/`, `/manifest.json`, `/RESTORE.md`,
+  `gpn-restyler/.delivery_patch.lock`,
+  `gpn-restyler/.delivery_patch_backups/` are local-only.
+- Verification: `ruff check src tests tools` clean; `pytest -q --no-cov
+  tests/gpn` exit 0; `pytest -q --no-cov tests --ignore=tests/gpn`
+  exit 0.

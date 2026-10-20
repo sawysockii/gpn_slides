@@ -137,8 +137,23 @@ def solve_measured_boxes(
                 model.add_allowed_assignments(
                     [choice, w, h], [(i, widths[i], heights[i]) for i in range(len(rows))]
                 )
-            model.add(x + w <= right)
-            model.add(y + h <= bottom)
+            # A hundredth of a point of slack absorbs the independent
+            # floor/ceiling of a source box and the content frame that
+            # represent the same edge (e.g. a full-canvas cover whose float
+            # height ceils a couple EMU above the frame's floored bottom).
+            # It cannot hide a real overflow, which is orders larger.
+            model.add(x + w <= right + 127)
+            model.add(y + h <= bottom + 127)
+            # Seed the authored layout (variant 0 is the authored width) so a
+            # feasible but slack model is reached within budget.
+            model.add_hint(x, _q(box["x"]))
+            model.add_hint(y, _q(box["y"]))
+            model.add_hint(w, widths[0])
+            if cid in containers:
+                model.add_hint(h, min(max(_q(box["h"]), 1), bottom - top))
+            else:
+                model.add_hint(choice, 0)
+                model.add_hint(h, heights[0])
             # Keep authored composition unless a change is needed to fit.
             for key, variable, weight in (("x", x, 1), ("y", y, 1), ("w", w, 8)):
                 target = _q(box[key])
@@ -153,10 +168,13 @@ def solve_measured_boxes(
 
     for parent, child, padding in containment:
         p, c = nodes[parent], nodes[child]
-        model.add(c["x"] >= p["x"] + _q(padding.get("l", 0), upper=True))
-        model.add(c["y"] >= p["y"] + _q(padding.get("t", 0), upper=True))
-        model.add(c["x"] + c["w"] <= p["x"] + p["w"] - _q(padding.get("r", 0), upper=True))
-        model.add(c["y"] + c["h"] <= p["y"] + p["h"] - _q(padding.get("b", 0), upper=True))
+        # Insets are minima: floor them so an authored layout whose insets and
+        # extents sum exactly to the container extent stays feasible after the
+        # independent ceiling of container/child extents (a 1-EMU artifact).
+        model.add(c["x"] >= p["x"] + _q(padding.get("l", 0)))
+        model.add(c["y"] >= p["y"] + _q(padding.get("t", 0)))
+        model.add(c["x"] + c["w"] <= p["x"] + p["w"] - _q(padding.get("r", 0)) + 127)
+        model.add(c["y"] + c["h"] <= p["y"] + p["h"] - _q(padding.get("b", 0)) + 127)
     for a, b in combinations(order, 2):
         if (a not in active and b not in active) or frozenset((a, b)) in allowed:
             continue
@@ -210,8 +228,9 @@ def solve_measured_boxes(
         result[cid] = {k: solver.value(node[k]) / EMU_PER_PT for k in ("x", "y", "w", "h")}
         if node["choice"] is not None:
             selected[cid] = solver.value(node["choice"])
-    # Verify the numerical result independently of CP-SAT's status.
-    eps = 2 / EMU_PER_PT
+    # Verify the numerical result independently of CP-SAT's status. The
+    # tolerance matches the 0.01 Pt numerical slack used for the bounds.
+    eps = 130 / EMU_PER_PT
     for cid in active:
         b = result[cid]
         if (

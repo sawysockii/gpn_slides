@@ -96,14 +96,49 @@ def classify_visual_units(
     from .units import emu_to_pt
 
     sem_index = _semantic_index(semantic_slide)
+    semantic_units = list(getattr(semantic_slide, "units", []) or [])
     relations = list(getattr(semantic_slide, "relations", []) or [])
+
+    def unit_refs(unit: Any) -> list[str]:
+        return [
+            str(getattr(ref, "object_id", "") or "")
+            for ref in list(getattr(unit, "source_refs", []) or [])
+            if str(getattr(ref, "object_id", "") or "")
+        ]
+
+    units_by_id = {
+        str(getattr(unit, "id", "") or ""): unit for unit in semantic_units
+    }
+    required_refs: set[str] = set()
+    for unit in semantic_units:
+        if str(getattr(unit, "preservation", "") or "") != "optional":
+            required_refs.update(unit_refs(unit))
+    required_relation_ids: set[str] = set()
     relation_targets: dict[str, list[str]] = {}
     for relation in relations:
-        refs = list(getattr(relation, "source_refs", []) or [])
-        for ref in refs:
-            relation_targets.setdefault(str(ref), []).append(
-                str(getattr(relation, "id", "")
-                    or getattr(relation, "relation_id", "")))
+        rid = str(
+            getattr(relation, "id", "")
+            or getattr(relation, "relation_id", "")
+        )
+        refs = [
+            str(getattr(ref, "object_id", "") or "")
+            for ref in list(getattr(relation, "source_refs", []) or [])
+            if str(getattr(ref, "object_id", "") or "")
+        ]
+        preservation = str(getattr(relation, "preservation", "") or "")
+        if preservation == "required":
+            required_relation_ids.add(rid)
+            required_refs.update(refs)
+        for unit_id in list(getattr(relation, "from_unit_ids", []) or []) + list(
+            getattr(relation, "to_unit_ids", []) or []
+        ):
+            unit = units_by_id.get(str(unit_id))
+            if unit is not None:
+                refs.extend(unit_refs(unit))
+                if preservation == "required":
+                    required_refs.update(unit_refs(unit))
+        for ref in dict.fromkeys(refs):
+            relation_targets.setdefault(ref, []).append(rid)
     units: list[VisualUnit] = []
     for obj in objects:
         kind = str(getattr(obj, "kind", "") or "")
@@ -152,6 +187,12 @@ def classify_visual_units(
                     f"{getattr(decision, 'reason', 'no authorization')}")
         else:
             evidence.append("no omit authorization available: required")
+        if ref in required_refs:
+            if not required:
+                evidence.append(
+                    "required semantic unit/relation keeps vector geometry: "
+                    "an omit authorization cannot waive it")
+            required = True
         if not required:
             unit_kind = "optional_decor"
         box = getattr(obj, "local_box", None)
@@ -183,6 +224,12 @@ def _palette(rules: Any) -> dict[str, str]:
         return out
     for name, value in dict(getattr(rules, "colors", {}) or {}).items():
         out[str(name)] = str(value).strip().lstrip("#").upper()
+    conditional = getattr(rules, "conditional_colors", {}) or {}
+    if isinstance(conditional, dict):
+        for name, condition in conditional.items():
+            rgb = str(getattr(condition, "rgb", "") or "").strip().lstrip("#").upper()
+            if rgb:
+                out[str(name)] = rgb
     return out
 
 
@@ -396,4 +443,116 @@ def check_visual_representation(
             report.invisible_representation.append(unit.unit_id)
     report.ok = (not report.missing_representation
                  and not report.invisible_representation)
+    return report
+
+def check_scene_visual_coverage(
+    objects: list[Any],
+    semantic_slide: Any,
+    transform_ledger: Any,
+    source_snapshot: str,
+    lowered_plan: dict[str, Any],
+    rules: Any,
+) -> Any:
+    """Reject authored scenes whose REQUIRED drawing units have no paint.
+
+    This is a pre-build gate, not a post-emission excuse: every required
+    visual unit must belong to a region that declares an applicable fill,
+    stroke, foreground, or approved brand asset. An empty ``surface_token``
+    on a required decor region is a named repair, never a silent "source
+    fill dropped -> invisible frame".
+    """
+    from .models import VisualCoverageEntry, VisualCoverageReport
+    from .semantics import can_omit_source_object
+
+    palette = _palette(rules)
+    units = classify_visual_units(
+        objects,
+        semantic_slide,
+        transform_ledger,
+        source_snapshot,
+        can_omit=can_omit_source_object
+        if semantic_slide is not None and transform_ledger is not None
+        else None,
+    )
+    by_id = {str(getattr(o, "id", "") or ""): o for o in objects}
+    owners: dict[str, dict[str, Any]] = {}
+    for zone in lowered_plan.get("zones", []) or []:
+        if not isinstance(zone, dict):
+            continue
+        for ref in list(zone.get("content_refs", []) or []):
+            owners[str(ref)] = zone
+    report = VisualCoverageReport()
+    for unit in units:
+        entry = VisualCoverageEntry(
+            unit_id=unit.unit_id,
+            source_refs=list(unit.source_refs),
+            kind=unit.kind,
+            required=unit.required,
+        )
+        if not unit.required:
+            entry.resolution = "not_required"
+            report.entries.append(entry)
+            continue
+        report.expected_required_units.append(unit.unit_id)
+        refs = [str(r) for r in unit.source_refs if str(r)]
+        regions = [owners.get(ref) for ref in refs]
+        missing = [ref for ref, zone in zip(refs, regions, strict=True) if zone is None]
+        if missing:
+            entry.resolution = "missing_region"
+            entry.issues.append("SCENE_VISUAL_COVERAGE_MISSING_REGION")
+            report.missing_region.extend(missing)
+            report.absent_units.append(unit.unit_id)
+            report.issues.append(
+                f"SCENE_VISUAL_COVERAGE_MISSING_REGION:{unit.unit_id}:{','.join(missing)}"
+            )
+            report.entries.append(entry)
+            continue
+        resolved = True
+        for ref, zone in zip(refs, regions, strict=True):
+            surface = str(zone.get("surface_token", "") or "") or str(
+                zone.get("fill_token", "") or ""
+            )
+            stroke = str(zone.get("stroke_token", "") or "")
+            foreground = str(zone.get("foreground_token", "") or "")
+            entry.region_ref = entry.region_ref or str(zone.get("zone_id", "") or "")
+            entry.surface_token = entry.surface_token or surface
+            entry.stroke_token = entry.stroke_token or stroke
+            entry.foreground_token = entry.foreground_token or foreground
+            obj = by_id.get(ref)
+            kind = str(getattr(obj, "kind", "") or "")
+            payload = getattr(obj, "payload", None)
+            has_asset = bool(
+                getattr(payload, "asset", None) if payload is not None else None
+            )
+            if kind == "image" or (unit.kind == "brand" and has_asset):
+                entry.resolution = "brand_asset"
+                continue
+            if unit.kind in ("chart", "table"):
+                entry.resolution = "painted"
+                continue
+            if surface and surface in palette:
+                entry.resolution = "painted"
+                continue
+            if stroke and stroke in palette:
+                entry.resolution = "painted"
+                continue
+            if foreground and foreground in palette:
+                entry.resolution = "text_foreground"
+                continue
+            # Source line/fill is never a normative token. Only a declared
+            # palette token can discharge coverage.
+            resolved = False
+            entry.resolution = "unresolved"
+            entry.issues.append(f"SCENE_VISUAL_COVERAGE_UNRESOLVED:{ref}")
+            report.unresolved.append(ref)
+            report.issues.append(
+                f"SCENE_VISUAL_COVERAGE_UNRESOLVED:{unit.unit_id}:{ref}:"
+                f"surface={surface!r}:stroke={stroke!r}:foreground={foreground!r}"
+            )
+        if resolved:
+            report.present_units.append(unit.unit_id)
+        else:
+            report.absent_units.append(unit.unit_id)
+        report.entries.append(entry)
+    report.ok = not report.absent_units
     return report

@@ -198,6 +198,37 @@ def test_underlay_and_content_remain_contained():
     assert result.boxes["panel"]["h"] >= 70
 
 
+def test_container_tight_insets_survive_quantization():
+    """Insets are minima: an authored child whose fractional insets sum with
+    its width to the container width must not become a 1-EMU contradiction
+    when each inset and each extent is quantized independently."""
+    # 278.4 - (9.6 + 86.4) leaves right = 182.4 only up to float noise, so
+    # ceil-quantising left and right independently overshoots by one EMU.
+    left = 9.600000000000023
+    parent_w, child_w = 278.4, 86.4
+    hints = {
+        "container": rect(x=0.0, y=0.0, w=parent_w, h=120.0),
+        "child": rect(x=left, y=10.0, w=child_w, h=40.0),
+    }
+    padding = {
+        "l": left,
+        "t": 10.0,
+        "r": parent_w - left - child_w,
+        "b": 120.0 - 10.0 - 40.0,
+    }
+    result = solve_measured_boxes(
+        hints,
+        rect(w=600, h=400),
+        allowed_pairs={frozenset({"container", "child"})},
+        container_ids={"container"},
+        containments=[("container", "child", padding)],
+    )
+    assert result.status in ("OPTIMAL", "FEASIBLE"), result.issues
+    parent, child = result.boxes["container"], result.boxes["child"]
+    assert child["x"] >= parent["x"] - 1e-6
+    assert child["x"] + child["w"] <= parent["x"] + parent["w"] + 1e-6
+
+
 def test_true_infeasibility_has_a_finite_scope():
     result = solve_measured_boxes({"a": rect(h=60), "b": rect(h=60)}, rect(h=100))
     assert result.status == "INFEASIBLE"

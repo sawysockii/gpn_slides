@@ -20,6 +20,9 @@ def build_fingerprint(run_dir: Path, plan: Path) -> str:
                 "source_ledger.json",
                 "compiled_rules.json",
                 "template_profile.json",
+                "profiles/base_template.pptx",
+                "base_template.pptx",
+                "asset_overrides.json",
                 "font_inventory.json",
                 "classification_and_transformation_ledger.json",
             )
@@ -40,6 +43,7 @@ def build_fingerprint(run_dir: Path, plan: Path) -> str:
             "frame_contract.py",
             "native.py",
             "measured_build.py",
+            "visibility_scope.py",
             "export_pipeline.py",
             "opc_adapter.py",
         )
